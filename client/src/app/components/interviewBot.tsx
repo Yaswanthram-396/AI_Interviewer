@@ -66,7 +66,6 @@ const getOrCreateSession = () => {
   }
   return { sessionId, expiresAt };
 };
-const { sessionId, expiresAt } = getOrCreateSession();
 
 
 const InterviewBot = ({ id }: { id: string }) => {
@@ -95,6 +94,20 @@ const InterviewBot = ({ id }: { id: string }) => {
   const [isSTTStreamReady, setIsSTTStreamReady] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(true);
   const conversationEndRef = useRef<HTMLDivElement>(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null); // NEW STATE FOR EXPIRY
+
+    // --- (B) Initialize Session ID only AFTER mounting on the client ---
+  useEffect(() => {
+      // 1. Ensure this logic only runs in the browser
+      if (typeof window !== 'undefined') { 
+           const sessionData = getOrCreateSession();
+           setSessionId(sessionData.sessionId);
+           setExpiresAt(sessionData.expiresAt); // Set the expiry state
+      }
+      
+      // This runs only once when the component mounts
+  }, []); 
 // A buffer to collect all fragments until the silence timeout is reached
 
 
@@ -310,12 +323,13 @@ ws.onmessage = async (event: MessageEvent) => {
       isSTTStreamReadyRef.current = false;
       console.log("⚡ WebSocket disconnected. Retrying in 5 seconds...");
       setTimeout(startWebSocket, 5000);
+      localStorage.removeItem("ai_interview_session");
     };
 
     ws.onerror = (err) => {
       console.error("WebSocket error:", err);
     };
-  }, [addMessage, processAggregatedTranscript]); // Add dependency
+  }, [addMessage]); // Add dependency
 
 const startRecording = async () => {
   if (!sessionStarted || wsStatus !== "connected" || isRecording) return;
@@ -572,6 +586,15 @@ const stopRecording = () => {
       </div>
     </div>
   );
+
+    if (!sessionId) {
+      return (
+        <div className="flex items-center justify-center h-screen">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <p className="ml-3 text-lg text-gray-700">Initializing session...</p>
+        </div>
+      );
+    }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">

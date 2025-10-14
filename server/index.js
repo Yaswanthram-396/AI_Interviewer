@@ -161,14 +161,15 @@ async function validateOrCreateSession(
 // ❌ REMOVED processWhisperTranscription and convertPcmToMp3 functions
 
 wss.on("connection", (ws) => {
-  console.log("✅ WS client connected");
   let currentSessionId = null;
-
+  console.log("✅ WS client connected (Port 8081)");
   ws.on("message", async (message) => {
+    console.log("📡 Received message:");
     try {
       const data = JSON.parse(message.toString());
       const { sessionId: clientSessionId, expiresAt: clientExpiresAt } = data;
       let sessionId = clientSessionId || `session_${Date.now()}`;
+      console.log("📡 Session ID:", clientSessionId, clientExpiresAt);
 
       // -- 1. Validate or create MongoDB session (with expiry) --
       const sessionResult = await validateOrCreateSession(
