@@ -126,11 +126,7 @@ const SESSION_EXPIRY_MINUTES = 15;
 function generateNewSessionId() {
   return `session_${Date.now()}`;
 }
-async function validateOrCreateSession(
-  sessionId,
-  clientExpiresAt,
-  interviewId
-) {
+async function validateOrCreateSession(sessionId, expiresAt, interviewId) {
   // ... (Your existing DB logic)
   const now = new Date();
   let dbSession = await InterviewSession.findOne({ sessionId }).lean();
@@ -142,8 +138,8 @@ async function validateOrCreateSession(
       return { isValid: true, isNew: false, session: dbSession };
     }
   }
-  const expiresAt = clientExpiresAt
-    ? new Date(clientExpiresAt)
+  const newexpiresAt = expiresAt
+    ? new Date(expiresAt)
     : new Date(now.getTime() + SESSION_EXPIRY_MINUTES * 60 * 1000);
 
   const newSession = await InterviewSession.create({
@@ -153,7 +149,7 @@ async function validateOrCreateSession(
     interviewDetails: null,
     created: now,
     lastUpdated: now,
-    expiresAt,
+    expiresAt: newexpiresAt,
   });
   return { isValid: true, isNew: true, session: newSession };
 }
@@ -161,19 +157,21 @@ async function validateOrCreateSession(
 // ❌ REMOVED processWhisperTranscription and convertPcmToMp3 functions
 
 wss.on("connection", (ws) => {
-  console.log("✅ WS client connected");
   let currentSessionId = null;
-
+  console.log("✅ WS client connected (Port 8081)");
   ws.on("message", async (message) => {
+    console.log("📡 Received message:");
     try {
       const data = JSON.parse(message.toString());
-      const { sessionId: clientSessionId, expiresAt: clientExpiresAt } = data;
-      let sessionId = clientSessionId || `session_${Date.now()}`;
+      console.log(data);
+      const { sessionId, expiresAt } = data;
+      // let sessionId = clientSessionId || `session_${Date.now()}`;
+      console.log("📡 Session ID:", sessionId, expiresAt);
 
       // -- 1. Validate or create MongoDB session (with expiry) --
       const sessionResult = await validateOrCreateSession(
         sessionId,
-        clientExpiresAt,
+        expiresAt,
         data.interviewId
       );
 
