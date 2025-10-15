@@ -181,9 +181,10 @@ const sendAudioData = useCallback((audioData: ArrayBuffer) => {
       type: "audio_chunk",
       audioBase64: btoa(base64Audio),
       sessionId,
+      expiresAt
     })
   );
-  console.log(`Sent audio chunk, size: ${audioData.byteLength}, time: ${startTime}`);
+//   console.log(`Sent audio chunk, size: ${audioData.byteLength}, time: ${startTime}`);
 }, []);
 
     // 🎯 NEW FUNCTION: PROCESS FINAL AGGREGATED TRANSCRIPT
@@ -372,7 +373,7 @@ const startRecording = async () => {
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
-        JSON.stringify({ type: "start_stt", sessionId })
+        JSON.stringify({ type: "start_stt", sessionId, expiresAt })
       );
       console.log(`🎤 Sent start_stt at ${performance.now() - recordStartTime}ms`);
     }
