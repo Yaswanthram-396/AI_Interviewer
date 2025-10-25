@@ -13,12 +13,17 @@ const InterviewSchema = new mongoose.Schema(
     assessmentId: {
       type: String,
       // required: [true, "Interview ID is required"],
-      unique: true,
+      // unique: true,
     },
-
+    generatedQuestions: [
+      {
+        type: String,
+        // required: [true, "Generated questions are required"],
+      },
+    ],
     description: {
       type: String,
-      maxLength: [500, "Description cannot exceed 500 characters"],
+      // maxLength: [500, "Description cannot exceed 500 characters"],
     },
 
     timeLimit: {

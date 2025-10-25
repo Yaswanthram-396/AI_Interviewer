@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 
 const InterviewSessionSchema = new mongoose.Schema({
-  sessionId: { type: String, required: true, unique: true },
+  sessionId: { type: String },
   history: [
     {
       role: {
