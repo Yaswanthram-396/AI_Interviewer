@@ -360,12 +360,6 @@ Interview Completion
 GitHub:
 https://github.com/Yaswanthram-396
 
-LinkedIn:
-Add Your LinkedIn Profile
-
-Portfolio:
-Add Your Portfolio Link
-
 ---
 
 ## ⭐ Project Highlights
