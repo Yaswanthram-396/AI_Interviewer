@@ -5,542 +5,628 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Mic, Loader2, Clock, Video, MessageSquare, Wifi, Headphones, X, ChevronLeft, ChevronRight, Settings, Users, PhoneOff, Monitor, Maximize2 } from "lucide-react";
 
 interface ConversationMessage {
-  id: number;
-  sender: "bot" | "user";
-  text: string;
-  isAudio: boolean;
+  id: number;
+  sender: "bot" | "user";
+  text: string;
+  isAudio: boolean;
 }
 
 interface TTSResponse {
-  type: "tts_audio";
-  audioBase64: string;
-  text: string;
+  type: "tts_audio";
+  turnId: string;
+  audioBase64: string | null;
+  text: string;
+  ttsError?: string;
 }
 
 interface STTResponse {
-  type: "interim_transcript" | "final_transcript";
-  transcript: string;
+  type: "interim_transcript" | "final_transcript";
+  transcript: string;
+}
+
+interface SessionReady {
+  type: "session_ready";
+  sessionId: string;
+  resumeToken: string;
+  resumed: boolean;
 }
 
 interface STTStartedResponse {
-  type: "stt_started";
-  sessionId: string;
+  type: "stt_started";
+  sessionId: string;
+}
+
+interface UserTurnCommitted {
+  type: "user_turn_committed";
+  turnId: string;
+  text: string;
+}
+
+interface TurnCancelled {
+  type: "turn_cancelled";
+  turnId: string;
+}
+
+interface TurnState {
+  type: "turn_state";
+  turnId: string;
+  state: string;
 }
 
 interface SessionEnded {
-  type: "session_ended";
-  message: string;
+  type: "session_ended";
+  message: string;
+}
+
+interface SpeechStarted {
+  type: "speech_started" | "pong";
 }
 
 interface ErrorResponse {
-  type: "error" | "stt_error" | "warning";
-  message: string;
+  type: "error" | "stt_error" | "warning";
+  code?: string;
+  turnId?: string;
+  retryable?: boolean;
+  message: string;
 }
 
-type WSMessage = TTSResponse | STTResponse | STTStartedResponse | SessionEnded | ErrorResponse;
-// Generate "session id" and expiration, re-use if one exists and is not expired.
-function generateNewSessionId() {
-  // Your logic, e.g. a GUID or timestamp-based string
-  return "session_" + Date.now() + "_" + Math.random().toString(36).substring(2,8);
-}
-const getOrCreateSession = () => {
-  const key = "ai_interview_session";
-  const saved = localStorage.getItem(key);
+type WSMessage =
+  | TTSResponse
+  | STTResponse
+  | STTStartedResponse
+  | SessionReady
+  | UserTurnCommitted
+  | TurnCancelled
+  | TurnState
+  | SessionEnded
+  | SpeechStarted
+  | ErrorResponse;
 
-  // 15 minutes in ms
-  const EXPIRE_MS = 15 * 60 * 1000;
-  let sessionId, expiresAt;
-  const now = Date.now();
+const newTurnId = () => `turn_${crypto.randomUUID()}`;
 
-  if (saved) {
-    const { sessionId: prevId, expiresAt: prevExpiry } = JSON.parse(saved);
-    if (Number(prevExpiry) > now) {
-      sessionId = prevId;
-      expiresAt = prevExpiry;
-    }
-  }
-  if (!sessionId) {
-    sessionId = generateNewSessionId();
-    expiresAt = now + EXPIRE_MS;
-    localStorage.setItem(key, JSON.stringify({ sessionId, expiresAt }));
-  }
-  return { sessionId, expiresAt };
+// The resume token lets a dropped connection continue the same server-side session.
+// It is kept per interview in sessionStorage and cleared when the server rejects it.
+const resumeKey = (interviewId: string) => `ai_interview_resume_${interviewId}`;
+const readResumeToken = (interviewId: string): string | undefined => {
+  try {
+    return sessionStorage.getItem(resumeKey(interviewId)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+};
+const writeResumeToken = (interviewId: string, token: string | null) => {
+  try {
+    if (token) sessionStorage.setItem(resumeKey(interviewId), token);
+    else sessionStorage.removeItem(resumeKey(interviewId));
+  } catch {
+    /* storage unavailable: recovery is simply disabled */
+  }
 };
 
+const MAX_RECONNECT_ATTEMPTS = 8;
 
 const InterviewBot = ({ id }: { id: string }) => {
-  const wsRef = useRef<WebSocket | null>(null);
-  const userVideoRef = useRef<HTMLVideoElement>(null);
-  const sessionRecorderRef = useRef<MediaRecorder | null>(null);
-  const sessionChunksRef = useRef<BlobPart[]>([]);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const audioStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const userVideoRef = useRef<HTMLVideoElement>(null);
+  const sessionRecorderRef = useRef<MediaRecorder | null>(null);
+  const sessionChunksRef = useRef<BlobPart[]>([]);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
 
-  const isRecordingRef = useRef<boolean>(false);
-  const isSTTStreamReadyRef = useRef<boolean>(false);
+  const isRecordingRef = useRef<boolean>(false);
+  const isSTTStreamReadyRef = useRef<boolean>(false);
 
-  const [conversation, setConversation] = useState<ConversationMessage[]>([]);
-  const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
-  const [isRecording, setIsRecording] = useState(false);
-  const [isBotSpeaking, setIsBotSpeaking] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [liveTranscript, setLiveTranscript] = useState("");
-  const [timeRemaining, setTimeRemaining] = useState(15 * 60);
-  const [sessionStarted, setSessionStarted] = useState(false);
-  const [sessionRecordingUrl, setSessionRecordingUrl] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isSTTStreamReady, setIsSTTStreamReady] = useState(false);
-  const [isChatOpen, setIsChatOpen] = useState(true);
-  const conversationEndRef = useRef<HTMLDivElement>(null);
-  const [sessionId, setSessionId] = useState(null);
-  const [expiresAt, setExpiresAt] = useState<number | null>(null); // NEW STATE FOR EXPIRY
+  const [conversation, setConversation] = useState<ConversationMessage[]>([]);
+  const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
+  const [isRecording, setIsRecording] = useState(false);
+  const [isBotSpeaking, setIsBotSpeaking] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [timeRemaining, setTimeRemaining] = useState(15 * 60);
+  const [sessionStarted, setSessionStarted] = useState(false);
+  const [sessionRecordingUrl, setSessionRecordingUrl] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSTTStreamReady, setIsSTTStreamReady] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(true);
+  const conversationEndRef = useRef<HTMLDivElement>(null);
+  const [sessionReady, setSessionReady] = useState(false);
 
-    // --- (B) Initialize Session ID only AFTER mounting on the client ---
-  useEffect(() => {
-      // 1. Ensure this logic only runs in the browser
-      if (typeof window !== 'undefined') { 
-           const sessionData = getOrCreateSession();
-           setSessionId(sessionData.sessionId);
-           setExpiresAt(sessionData.expiresAt); // Set the expiry state
-      }
-      
-      // This runs only once when the component mounts
-  }, []); 
-// A buffer to collect all fragments until the silence timeout is reached
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const helloRetriedRef = useRef(false);
+  const playbackCtxRef = useRef<AudioContext | null>(null);
+  const playbackSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const cancelledTurnsRef = useRef<Set<string>>(new Set());
+  const playedTurnsRef = useRef<Set<string>>(new Set());
+  const pendingTurnRef = useRef<string | null>(null);
+  const liveFragmentsRef = useRef<string[]>([]);
+  const isBotSpeakingRef = useRef(false);
+  const isLoadingRef = useRef(false);
+  // Latest handlers for socket callbacks (avoids stale closures without re-creating the socket).
+  const latestRef = useRef<{ stopRecording: () => void; endSession: (reconnect?: boolean) => void }>({
+    stopRecording: () => {},
+    endSession: () => {},
+  });
 
+  const setLoading = (v: boolean) => {
+    isLoadingRef.current = v;
+    setIsLoading(v);
+  };
+  const setBotSpeaking = (v: boolean) => {
+    isBotSpeakingRef.current = v;
+    setIsBotSpeaking(v);
+  };
 
-// Set the silence duration (5000ms = 5 seconds)
-const SILENCE_DURATION = 5000;
+  const scrollToBottom = () => {
+    conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
 
-    // 🎯 REVISED REFS FOR AGGREGATION
-    const finalTranscriptBuffer = useRef<string[]>([]);
-    const finalTranscriptTimeout = useRef<NodeJS.Timeout | null>(null);
+  const addMessage = useCallback((sender: "bot" | "user", text: string, isAudio: boolean = false) => {
+    setConversation((prev) => [...prev, { id: Date.now() + Math.random(), sender, text, isAudio }]);
+  }, []);
 
-  const scrollToBottom = () => {
-    conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  const getWsUrl = () => {
+    const configuredUrl = process.env.NEXT_PUBLIC_WS_URL;
+    if (configuredUrl) return configuredUrl;
 
-  const addMessage = useCallback((sender: "bot" | "user", text: string, isAudio: boolean = false) => {
-    setConversation((prev) => [...prev, { id: Date.now() + Math.random(), sender, text, isAudio }]);
-  }, []);
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.hostname;
+    const port = host === "localhost" || host.includes("127.0.0.1") ? ":8081" : "";
+    return `${protocol}//${host}${port}`;
+  };
 
-  const getWsUrl = () => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.hostname;
-    const port = host === "localhost" || host.includes("127.0.0.1") ? ":8081" : "";
-    return `${protocol}//${host}${port}`;
-  };
+  const sendJson = useCallback((payload: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(payload));
+    return true;
+  }, []);
 
-const convertFloat32ToInt16 = (buffer: Float32Array) => {
-  const l = buffer.length;
-  const buf = new Int16Array(l);
-  for (let i = 0; i < l; i++) {
-    const sample = Math.max(-1, Math.min(1, buffer[i] * 2)); // Boost volume
-    buf[i] = sample * 0x7FFF;
-  }
-  console.log(`Converted audio chunk, size: ${buf.buffer.byteLength}, samples: ${l}`);
-  return buf.buffer;
-};
-
-  const sendTTSRequest = (prompt: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      addMessage("bot", "Connection not ready. Please wait for connection or refresh.", false);
-      return;
-    }
-    setIsLoading(true);
-    wsRef.current.send(
-      JSON.stringify({
-        type: "tts_request",
-        prompt,
-        sessionId, 
-        expiresAt,
-        interviewId: id
-      })
-    );
-  };
-
-const sendAudioData = useCallback((audioData: ArrayBuffer) => {
-  if (!isRecordingRef.current || wsRef.current?.readyState !== WebSocket.OPEN || !isSTTStreamReadyRef.current) {
-    console.warn("Audio chunk dropped: not recording or stream not ready");
-    return;
-  }
-  if (audioData.byteLength === 0) {
-    console.warn("Empty audio chunk, skipping");
-    return;
-  }
-  const u8 = new Uint8Array(audioData);
-  let base64Audio = "";
-  for (let i = 0; i < u8.length; i++) {
-    base64Audio += String.fromCharCode(u8[i]);
-  }
-  const startTime = performance.now();
-  wsRef.current.send(
-    JSON.stringify({
-      type: "audio_chunk",
-      audioBase64: btoa(base64Audio),
-      sessionId,
-      expiresAt
-    })
-  );
-//   console.log(`Sent audio chunk, size: ${audioData.byteLength}, time: ${startTime}`);
-}, []);
-
-    // 🎯 NEW FUNCTION: PROCESS FINAL AGGREGATED TRANSCRIPT
-const processAggregatedTranscript = useCallback(() => {
-    // 1. Clear the timer if it was set (important safety check)
-    if (finalTranscriptTimeout.current) {
-        clearTimeout(finalTranscriptTimeout.current);
-        finalTranscriptTimeout.current = null;
+  const convertFloat32ToInt16 = (buffer: Float32Array) => {
+    const l = buffer.length;
+    const buf = new Int16Array(l);
+    for (let i = 0; i < l; i++) {
+      const sample = Math.max(-1, Math.min(1, buffer[i] * 2)); // Boost volume
+      buf[i] = sample * 0x7fff;
     }
+    return buf.buffer;
+  };
 
-    // 2. Combine all fragments into one clean message
-    const finalText = finalTranscriptBuffer.current.join(" ").trim();
-    
-    // 3. Reset the buffer for the next user turn
-    finalTranscriptBuffer.current = [];
-
-    // 4. Proceed only if there is text
-    if (finalText.length > 0) {
-        // *** CRITICAL: ADD ONE MESSAGE TO UI ***
-        // This function should add a single chat bubble to your message history
-        addMessage("user", finalText, true); 
-        
-        // *** CRITICAL: SEND ONE REQUEST TO SERVER ***
-        // This is the ONLY place the TTS/AI API call should be made
-        sendTTSRequest(finalText); 
+  // Begin the interview: the server greets the candidate. The turnId correlates the reply.
+  const requestGreeting = () => {
+    const turnId = newTurnId();
+    pendingTurnRef.current = turnId;
+    setLoading(true);
+    if (!sendJson({ type: "start_interview", turnId })) {
+      setLoading(false);
+      addMessage("bot", "Connection not ready. Please wait for connection or refresh.", false);
     }
-}, [addMessage, sendTTSRequest]); // Include your necessary dependencies
+  };
 
-  const startWebSocket = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+  // Raw PCM16 goes over the socket as a binary frame.
+  const sendAudioData = useCallback((audioData: ArrayBuffer) => {
+    if (!isRecordingRef.current || !isSTTStreamReadyRef.current) return;
+    if (audioData.byteLength === 0) return;
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(audioData);
+  }, []);
 
-    setWsStatus("connecting");
-    const ws = new WebSocket(getWsUrl());
-    wsRef.current = ws;
+  const stopPlayback = useCallback(() => {
+    const src = playbackSourceRef.current;
+    playbackSourceRef.current = null;
+    if (src) {
+      src.onended = null;
+      try {
+        src.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    setBotSpeaking(false);
+  }, []);
 
-    ws.onopen = () => {
-      setWsStatus("connected");
-      console.log("✅ Connected to WebSocket");
-    };
+  // Complete-response playback: the whole MP3 is decoded before it starts.
+  const playBotAudio = useCallback(
+    async (turnId: string, audioBase64: string) => {
+      if (!playbackCtxRef.current) {
+        const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+        playbackCtxRef.current = new Ctx();
+      }
+      const ctx = playbackCtxRef.current as AudioContext;
+      if (ctx.state === "suspended") await ctx.resume();
+      const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0)).buffer;
+      const decoded = await ctx.decodeAudioData(bytes);
+      if (cancelledTurnsRef.current.has(turnId)) return;
+      stopPlayback();
+      const source = ctx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(ctx.destination);
+      source.onended = () => {
+        if (playbackSourceRef.current === source) {
+          playbackSourceRef.current = null;
+          setBotSpeaking(false);
+        }
+      };
+      playbackSourceRef.current = source;
+      setBotSpeaking(true);
+      source.start(0);
+      sendJson({ type: "playback_started", turnId });
+    },
+    [sendJson, stopPlayback]
+  );
 
-ws.onmessage = async (event: MessageEvent) => {
-  try {
-    const data: WSMessage = JSON.parse(event.data);
-    setIsLoading(false);
+  // Candidate started talking over a pending/playing reply: cancel it server-side too.
+  const interruptBot = useCallback(() => {
+    if (pendingTurnRef.current) cancelledTurnsRef.current.add(pendingTurnRef.current);
+    stopPlayback();
+    setLoading(false);
+    sendJson({ type: "interrupt" });
+  }, [sendJson, stopPlayback]);
 
-    switch (data.type) {
-      case "tts_audio": {
-        const { audioBase64, text } = data as TTSResponse;
-        // NOTE: We don't add the message here, it was added *before* the TTS request in processAggregatedTranscript
-        // We add the bot's response message here.
-        addMessage("bot", text, true); 
+  const handleServerMessage = useCallback(
+    async (data: WSMessage) => {
+      switch (data.type) {
+        case "session_ready": {
+          writeResumeToken(id, data.resumeToken);
+          reconnectAttemptsRef.current = 0;
+          helloRetriedRef.current = false;
+          setSessionReady(true);
+          setWsStatus("connected");
+          break;
+        }
+        case "tts_audio": {
+          // The server replays responses after duplicates/resume; play each turn once.
+          if (playedTurnsRef.current.has(data.turnId) || cancelledTurnsRef.current.has(data.turnId)) break;
+          playedTurnsRef.current.add(data.turnId);
+          setLoading(false);
+          addMessage("bot", data.text, true);
+          if (data.audioBase64) {
+            try {
+              await playBotAudio(data.turnId, data.audioBase64);
+            } catch (e) {
+              console.error("Audio playback failed:", e);
+              setErrorMessage("Could not play the interviewer's audio. The text is shown instead.");
+            }
+          } else {
+            setErrorMessage("Voice is temporarily unavailable. The text is shown instead.");
+          }
+          break;
+        }
+        case "user_turn_committed":
+          liveFragmentsRef.current = [];
+          setLiveTranscript("");
+          pendingTurnRef.current = data.turnId;
+          addMessage("user", data.text, true);
+          setLoading(true);
+          break;
+        case "turn_cancelled":
+          cancelledTurnsRef.current.add(data.turnId);
+          if (pendingTurnRef.current === data.turnId) setLoading(false);
+          break;
+        case "turn_state":
+          break;
+        case "stt_started":
+          setIsSTTStreamReady(true);
+          isSTTStreamReadyRef.current = true;
+          break;
+        case "interim_transcript":
+          setLiveTranscript([...liveFragmentsRef.current, data.transcript].join(" "));
+          break;
+        case "final_transcript":
+          if (data.transcript.trim()) {
+            liveFragmentsRef.current.push(data.transcript.trim());
+            setLiveTranscript(liveFragmentsRef.current.join(" "));
+          }
+          break;
+        case "speech_started":
+          if (isBotSpeakingRef.current || isLoadingRef.current) interruptBot();
+          break;
+        case "pong":
+          break;
+        case "session_ended":
+          latestRef.current.endSession(true);
+          addMessage("bot", data.message, false);
+          break;
+        case "stt_error":
+          setErrorMessage(data.message);
+          setIsSTTStreamReady(false);
+          isSTTStreamReadyRef.current = false;
+          latestRef.current.stopRecording();
+          break;
+        case "error":
+        case "warning": {
+          if (data.code === "INVALID_RESUME_TOKEN" || data.code === "SESSION_EXPIRED") {
+            // Recovery is not possible; start a fresh server session once.
+            writeResumeToken(id, null);
+            if (!helloRetriedRef.current) {
+              helloRetriedRef.current = true;
+              sendJson({ type: "hello", interviewId: id });
+              break;
+            }
+          }
+          setErrorMessage(data.message);
+          if (data.turnId && data.turnId === pendingTurnRef.current) setLoading(false);
+          break;
+        }
+        default:
+          console.warn("Unknown message type:", data);
+      }
+    },
+    [id, addMessage, playBotAudio, interruptBot, sendJson]
+  );
 
-        const arrayBuffer = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0)).buffer;
+  const startWebSocket = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) return;
 
-        if (!audioContextRef.current) {
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-          if (AudioContextClass) audioContextRef.current = new AudioContextClass();
-        }
+    setWsStatus("connecting");
+    const ws = new WebSocket(getWsUrl());
+    wsRef.current = ws;
 
-        if (audioContextRef.current) {
-          const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-          const source = audioContextRef.current.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(audioContextRef.current.destination);
+    ws.onopen = () => {
+      // First message must identify the interview; a stored token resumes the prior session.
+      ws.send(JSON.stringify({ type: "hello", interviewId: id, resumeToken: readResumeToken(id) }));
+    };
 
-          setIsBotSpeaking(true);
-          source.start(0);
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        void handleServerMessage(JSON.parse(event.data) as WSMessage);
+      } catch (e) {
+        console.error("Error processing WebSocket message:", e);
+        setLoading(false);
+        setErrorMessage("Failed to process server message");
+      }
+    };
 
-          source.onended = () => {
-            setIsBotSpeaking(false);
-          };
-        }
-        break;
-      }
-      case "stt_started":
-        setIsSTTStreamReady(true);
-        isSTTStreamReadyRef.current = true;
-        console.log(`✅ STT stream ready at ${performance.now()}ms`);
-        break;
-      case "interim_transcript":
-        setLiveTranscript((data as STTResponse).transcript);
-        break;
+    ws.onclose = () => {
+      if (wsRef.current === ws) wsRef.current = null;
+      setWsStatus("disconnected");
+      setSessionReady(false);
+      setLoading(false);
+      setIsSTTStreamReady(false);
+      isSTTStreamReadyRef.current = false;
+      latestRef.current.stopRecording();
+      if (intentionalCloseRef.current) return;
+      if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setErrorMessage("Connection lost. Please refresh the page to continue.");
+        return;
+      }
+      const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 15000) + Math.random() * 500;
+      reconnectAttemptsRef.current += 1;
+      reconnectTimerRef.current = setTimeout(startWebSocket, delay);
+    };
 
-      // 🎯 NEW AGGREGATION LOGIC FOR 'final_transcript'
-      case "final_transcript": {
-        const transcript = (data as STTResponse).transcript;
-        console.log(`Fragment received: "${transcript}"`);
-        
-        // 1. If it's empty, ignore it.
-        if (!transcript || transcript.trim() === "") return;
-
-        // 2. Add fragment to the buffer
-        finalTranscriptBuffer.current.push(transcript.trim());
-        setLiveTranscript(finalTranscriptBuffer.current.join(" ") + "..."); // Update live view
-
-        // 3. Clear existing timeout (debounce)
-        if (finalTranscriptTimeout.current) {
-          clearTimeout(finalTranscriptTimeout.current);
-        }
-
-        // 4. Start a new 2000ms (2s) timeout
-        finalTranscriptTimeout.current = setTimeout(() => {
-          console.log("⏳ 2000ms silence detected. Processing aggregated transcript...");
-          setLiveTranscript(""); // Clear live transcript
-          processAggregatedTranscript();
-        }, 5000);
-
-        break;
-      }          
-
-      case "session_ended":
-        endSession();
-        addMessage("bot", (data as SessionEnded).message, false);
-        break;
-      case "error":
-      case "stt_error":
-      case "warning":
-        setErrorMessage(data.message);
-        setIsSTTStreamReady(false);
-        isSTTStreamReadyRef.current = false;
-        stopRecording();
-        break;
-      default:
-        console.warn("Unknown message type:", data);
-    }
-  } catch (e) {
-    console.error("Error processing WebSocket message:", e);
-    setIsLoading(false);
-    setErrorMessage("Failed to process server message");
-  }
-};
-
-    ws.onclose = () => {
-      setWsStatus("disconnected");
-      setIsLoading(false);
-      setIsSTTStreamReady(false);
-      isSTTStreamReadyRef.current = false;
-      console.log("⚡ WebSocket disconnected. Retrying in 5 seconds...");
-      setTimeout(startWebSocket, 5000);
-      localStorage.removeItem("ai_interview_session");
-    };
-
-    ws.onerror = (err) => {
-      console.error("WebSocket error:", err);
-    };
-  }, [addMessage]); // Add dependency
+    ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+    };
+  }, [id, handleServerMessage]);
 
 const startRecording = async () => {
-  if (!sessionStarted || wsStatus !== "connected" || isRecording) return;
+  if (!sessionStarted || wsStatus !== "connected" || isRecording) return;
 
-  setIsSTTStreamReady(false);
-  isSTTStreamReadyRef.current = false;
-  setLiveTranscript("");
-  setIsLoading(true);
-  const recordStartTime = performance.now();
+  setIsSTTStreamReady(false);
+  isSTTStreamReadyRef.current = false;
+  setLiveTranscript("");
+  setIsLoading(true);
+  const recordStartTime = performance.now();
 
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        sampleRate: 16000,
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
-    audioStreamRef.current = stream;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    audioStreamRef.current = stream;
 
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    audioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    audioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
 
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    await audioContextRef.current.audioWorklet.addModule("/pcm-processor.js");
-    const workletNode = new AudioWorkletNode(audioContextRef.current, "pcm-processor");
-    workletNodeRef.current = workletNode;
+    const source = audioContextRef.current.createMediaStreamSource(stream);
+    await audioContextRef.current.audioWorklet.addModule("/pcm-processor.js");
+    const workletNode = new AudioWorkletNode(audioContextRef.current, "pcm-processor");
+    workletNodeRef.current = workletNode;
 
-    workletNode.port.onmessage = (event) => {
-      if (!isRecordingRef.current) return;
-      const inputData = event.data as Float32Array;
-      const pcmData = convertFloat32ToInt16(inputData);
-      sendAudioData(pcmData);
-    };
+    workletNode.port.onmessage = (event) => {
+      if (!isRecordingRef.current) return;
+      const inputData = event.data as Float32Array;
+      const pcmData = convertFloat32ToInt16(inputData);
+      sendAudioData(pcmData);
+    };
 
-    source.connect(workletNode);
-    workletNode.connect(audioContextRef.current.destination);
+    source.connect(workletNode);
+    workletNode.connect(audioContextRef.current.destination);
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({ type: "start_stt", sessionId, expiresAt })
-      );
-      console.log(`🎤 Sent start_stt at ${performance.now() - recordStartTime}ms`);
-    }
-  } catch (error: any) {
-    console.error("Error accessing microphone:", error.message);
-    addMessage(
-      "bot",
-      `Could not start microphone: ${error.message}. Check permissions.`,
-      false
-    );
-    cleanup();
-    setIsRecording(false);
-    setIsLoading(false);
-    setIsSTTStreamReady(false);
-    isSTTStreamReadyRef.current = false;
-  }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({ type: "start_stt" })
+      );
+      console.log(`🎤 Sent start_stt at ${performance.now() - recordStartTime}ms`);
+    }
+  } catch (error: any) {
+    console.error("Error accessing microphone:", error.message);
+    addMessage(
+      "bot",
+      `Could not start microphone: ${error.message}. Check permissions.`,
+      false
+    );
+    cleanup();
+    setIsRecording(false);
+    setIsLoading(false);
+    setIsSTTStreamReady(false);
+    isSTTStreamReadyRef.current = false;
+  }
 };
 
-  const cleanup = () => {
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach((track) => track.stop());
-      audioStreamRef.current = null;
-    }
-    if (workletNodeRef.current) {
-      workletNodeRef.current.disconnect();
-      workletNodeRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-  };
+  const cleanup = () => {
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((track) => track.stop());
+      audioStreamRef.current = null;
+    }
+    if (workletNodeRef.current) {
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+  };
 
 const stopRecording = () => {
-  if (isRecording) {
-    isRecordingRef.current = false;
-    setIsRecording(false);
-    setIsSTTStreamReady(false);
-    isSTTStreamReadyRef.current = false;
-    cleanup();
-    
-    // 1. Tell the server to finalize any remaining audio
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({ type: "stop_stt", sessionId })
-      );
-    }
-    console.log("🛑 Recording stopped. Waiting for final fragments...");
+  if (isRecording) {
+    isRecordingRef.current = false;
+    setIsRecording(false);
+    setIsSTTStreamReady(false);
+    isSTTStreamReadyRef.current = false;
+    cleanup();
+    
+    // 1. Tell the server to finalize any remaining audio
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({ type: "stop_stt" })
+      );
+    }
+    console.log("🛑 Recording stopped. Waiting for final fragments...");
 
-    // 2. Immediately process buffered transcripts if stop button is pressed
-    // This forces the end of the user's turn without waiting for the 2s timeout
-    processAggregatedTranscript();
-  }
+    // 2. The server commits whatever was heard when it receives stop_stt (manual end of turn).
+  }
 };
 
-  useEffect(() => {
-    if (isSTTStreamReady && audioContextRef.current && !isRecording) {
-      isRecordingRef.current = true;
-      setIsRecording(true);
-      setIsLoading(false);
-      console.log("✅ Started PCM audio streaming");
-    }
-  }, [isSTTStreamReady, isRecording]);
-
-  const handleStartInterview = async () => {
-    if (wsStatus !== "connected" || sessionStarted) return;
-
-    try {
-      const userStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-      if (userVideoRef.current) {
-        userVideoRef.current.srcObject = userStream;
-        userVideoRef.current.muted = true;
-      }
-
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      });
-      const combinedAudioTracks = [...userStream.getAudioTracks(), ...displayStream.getAudioTracks()];
-      const combinedVideoTracks = [...displayStream.getVideoTracks(), ...userStream.getVideoTracks()];
-      const combinedStream = new MediaStream([...combinedVideoTracks, ...combinedAudioTracks]);
-
-      sessionRecorderRef.current = new MediaRecorder(combinedStream);
-      sessionChunksRef.current = [];
-
-      sessionRecorderRef.current.ondataavailable = (e) => {
-        if (e.data.size > 0) sessionChunksRef.current.push(e.data);
-      };
-
-      sessionRecorderRef.current.onstop = () => {
-        const blob = new Blob(sessionChunksRef.current, { type: "video/webm" });
-        const url = URL.createObjectURL(blob);
-        setSessionRecordingUrl(url);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "interview_session.webm";
-        a.click();
-      };
-
-      sessionRecorderRef.current.start();
-
-      const startTime = Date.now();
-      timerRef.current = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        const remaining = 15 * 60 - elapsed;
-        setTimeRemaining(remaining);
-        if (remaining <= 0) endSession();
-      }, 1000);
-
-      setSessionStarted(true);
-      sendTTSRequest("Welcome to the interview. Please start speaking.");
-    } catch (error) {
-      console.error("Error starting session:", error);
-      addMessage(
-        "bot",
-        "Could not start session recording or access media. Continuing without recording.",
-        false
-      );
-      setSessionStarted(true);
-      sendTTSRequest("Welcome to the interview. Please start speaking.");
-    }
-  };
-
-  const endSession = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    setSessionStarted(false);
-    setIsRecording(false);
-    setIsBotSpeaking(false);
-    setIsSTTStreamReady(false);
-    isRecordingRef.current = false;
-    isSTTStreamReadyRef.current = false;
-    setTimeRemaining(15 * 60);
-
-    cleanup();
-
-    // 🎯 Clear any pending transcript process
-    if (finalTranscriptTimeout.current) {
-        clearTimeout(finalTranscriptTimeout.current);
-        finalTranscriptTimeout.current = null;
+  useEffect(() => {
+    if (isSTTStreamReady && audioContextRef.current && !isRecording) {
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      setIsLoading(false);
+      console.log("✅ Started PCM audio streaming");
     }
-    finalTranscriptBuffer.current = [];
+  }, [isSTTStreamReady, isRecording]);
 
-    if (sessionRecorderRef.current && sessionRecorderRef.current.state !== "inactive") {
-      sessionRecorderRef.current.stop();
-    }
-    if (wsRef.current) wsRef.current.close();
+  const handleStartInterview = async () => {
+    if (wsStatus !== "connected" || sessionStarted) return;
 
-    if (userVideoRef.current && userVideoRef.current.srcObject) {
-      (userVideoRef.current.srcObject as MediaStream).getTracks().forEach((track) => track.stop());
-    }
-  };
+    try {
+      const userStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = userStream;
+        userVideoRef.current.muted = true;
+      }
 
-  useEffect(() => {
-    startWebSocket();
-    return () => endSession();
-  }, [startWebSocket]);
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+      });
+      const combinedAudioTracks = [...userStream.getAudioTracks(), ...displayStream.getAudioTracks()];
+      const combinedVideoTracks = [...displayStream.getVideoTracks(), ...userStream.getVideoTracks()];
+      const combinedStream = new MediaStream([...combinedVideoTracks, ...combinedAudioTracks]);
 
-  useEffect(() => scrollToBottom(), [conversation, liveTranscript]);
+      sessionRecorderRef.current = new MediaRecorder(combinedStream);
+      sessionChunksRef.current = [];
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
-  };
+      sessionRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) sessionChunksRef.current.push(e.data);
+      };
+
+      sessionRecorderRef.current.onstop = () => {
+        const blob = new Blob(sessionChunksRef.current, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+        setSessionRecordingUrl(url);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "interview_session.webm";
+        a.click();
+      };
+
+      sessionRecorderRef.current.start();
+
+      const startTime = Date.now();
+      timerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const remaining = 15 * 60 - elapsed;
+        setTimeRemaining(remaining);
+        if (remaining <= 0) endSession(true);
+      }, 1000);
+
+      setSessionStarted(true);
+      requestGreeting();
+    } catch (error) {
+      console.error("Error starting session:", error);
+      addMessage(
+        "bot",
+        "Could not start session recording or access media. Continuing without recording.",
+        false
+      );
+      setSessionStarted(true);
+      requestGreeting();
+    }
+  };
+
+  // reconnect=false is for unmount; true re-opens a fresh connection so a new interview can start.
+  const endSession = (reconnect = false) => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setSessionStarted(false);
+    setIsRecording(false);
+    stopPlayback();
+    setIsSTTStreamReady(false);
+    isRecordingRef.current = false;
+    isSTTStreamReadyRef.current = false;
+    setTimeRemaining(15 * 60);
+    setLoading(false);
+    liveFragmentsRef.current = [];
+    setLiveTranscript("");
+
+    cleanup();
+
+    if (sessionRecorderRef.current && sessionRecorderRef.current.state !== "inactive") {
+      sessionRecorderRef.current.stop();
+    }
+
+    intentionalCloseRef.current = true;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    writeResumeToken(id, null);
+    const ws = wsRef.current;
+    if (ws) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "end_interview" }));
+      ws.close();
+      wsRef.current = null;
+    }
+    if (reconnect) {
+      reconnectTimerRef.current = setTimeout(() => {
+        intentionalCloseRef.current = false;
+        playedTurnsRef.current.clear();
+        cancelledTurnsRef.current.clear();
+        startWebSocket();
+      }, 1000);
+    }
+
+    if (userVideoRef.current && userVideoRef.current.srcObject) {
+      (userVideoRef.current.srcObject as MediaStream).getTracks().forEach((track) => track.stop());
+    }
+  };
+
+  latestRef.current = { stopRecording, endSession };
+
+  useEffect(() => {
+    intentionalCloseRef.current = false;
+    startWebSocket();
+    return () => latestRef.current.endSession(false);
+  }, [startWebSocket]);
+
+  useEffect(() => scrollToBottom(), [conversation, liveTranscript]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+  };
 
   const renderStatusPill = (status: typeof wsStatus) => {
     const statusClasses = {
@@ -587,15 +673,6 @@ const stopRecording = () => {
       </div>
     </div>
   );
-
-    if (!sessionId) {
-      return (
-        <div className="flex items-center justify-center h-screen">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-          <p className="ml-3 text-lg text-gray-700">Initializing session...</p>
-        </div>
-      );
-    }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -783,7 +860,7 @@ const stopRecording = () => {
               <div className="w-px h-8 bg-gray-300 mx-2"></div>
 
               <button
-                onClick={endSession}
+                onClick={() => endSession(true)}
                 disabled={!sessionStarted}
                 className="w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-all shadow-md disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                 title="End Interview"
@@ -809,10 +886,10 @@ const stopRecording = () => {
               </p>
               <button
                 onClick={handleStartInterview}
-                disabled={wsStatus !== "connected"}
+                disabled={wsStatus !== "connected" || !sessionReady}
                 className="px-8 py-4 text-lg font-semibold rounded-xl shadow-xl transition-all duration-300 transform bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white active:scale-95 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed disabled:transform-none"
               >
-                {wsStatus === "connected" ? "Start Interview" : "Connecting..."}
+                {wsStatus === "connected" && sessionReady ? "Start Interview" : "Connecting..."}
               </button>
               {wsStatus === "connecting" && (
                 <div className="mt-4 flex items-center justify-center space-x-2 text-sm text-gray-500">

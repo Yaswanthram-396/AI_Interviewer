@@ -10,6 +10,8 @@ const InterviewSessionSchema = new mongoose.Schema({
         required: true,
       },
       content: { type: String, required: true },
+      turnId: { type: String },
+      at: { type: Date, default: Date.now },
     },
   ],
   interviewId: { type: String }, // Optional
@@ -20,7 +22,9 @@ const InterviewSessionSchema = new mongoose.Schema({
   },
   created: { type: Date, default: Date.now },
   lastUpdated: { type: Date, default: Date.now },
-  expiresAt: { type: Date }, // <-- New field
+  expiresAt: { type: Date },
 });
+
+InterviewSessionSchema.index({ expiresAt: 1 });
 
 module.exports = mongoose.model("InterviewSession", InterviewSessionSchema);
