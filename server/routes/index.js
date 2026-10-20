@@ -9,5 +9,6 @@ const router = express.Router();
 router.use("/auth", getAuth().router);
 
 router.use("/interviews", interviews);
+router.use("/interview-templates", require("../routes/template.routes"));
 
 module.exports = router;

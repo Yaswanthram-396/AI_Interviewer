@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "jest --watchman=false"
+    "test": "jest --watchman=false",
+    "seed:templates": "node scripts/seed-interview-templates.js"
   },
   "dependencies": {
     "@deepgram/sdk": "^4.11.2",
