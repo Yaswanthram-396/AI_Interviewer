@@ -145,6 +145,58 @@ describe("vertexChat", () => {
   });
 });
 
+describe("vertexChat with serverless Gemini", () => {
+  const cfg = { projectNumber: "123", model: "gemini-test", location: "us-central1", timeoutMs: 100, retries: 0, maxTokens: 50, temperature: 0.7, topP: 0.8 };
+  const reply = (parts) => ({ data: { candidates: [{ content: { parts } }] } });
+  const messages = [
+    { role: "system", content: "be an interviewer" },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "hello" },
+    { role: "user", content: "answer" },
+    { role: "user", content: "rephrase" },
+  ];
+
+  test("calls the publisher model URL with system instruction and alternating roles", async () => {
+    const post = jest.fn().mockResolvedValue(reply([{ text: " Next question? " }]));
+    const llm = createVertexChat({ config: cfg, getAccessToken: async () => "tok", http: { post } });
+    const r = await llm.complete({ messages });
+    expect(r.text).toBe("Next question?");
+    const [url, body, opts] = post.mock.calls[0];
+    expect(url).toBe("https://us-central1-aiplatform.googleapis.com/v1/projects/123/locations/us-central1/publishers/google/models/gemini-test:generateContent");
+    expect(body.systemInstruction.parts[0].text).toBe("be an interviewer");
+    expect(body.contents.map((c) => c.role)).toEqual(["user", "model", "user"]);
+    expect(body.contents[2].parts[0].text).toBe("answer\n\nrephrase");
+    expect(body.generationConfig).toEqual({ maxOutputTokens: 50, temperature: 0.7, topP: 0.8 });
+    expect(opts.headers.Authorization).toBe("Bearer tok");
+  });
+
+  test("uses the global host for the global location", async () => {
+    const post = jest.fn().mockResolvedValue(reply([{ text: "ok" }]));
+    const llm = createVertexChat({ config: { ...cfg, location: "global" }, getAccessToken: async () => "t", http: { post } });
+    await llm.complete({ messages });
+    expect(post.mock.calls[0][0]).toMatch(/^https:\/\/aiplatform\.googleapis\.com\/v1\/projects\/123\/locations\/global\//);
+  });
+
+  test("ignores thought parts and joins the visible text", async () => {
+    const post = jest.fn().mockResolvedValue(reply([{ text: "reasoning", thought: true }, { text: "Visible " }, { text: "answer" }]));
+    const llm = createVertexChat({ config: cfg, getAccessToken: async () => "t", http: { post } });
+    expect((await llm.complete({ messages })).text).toBe("Visible answer");
+  });
+
+  test("a response with no candidates is an LLM_EMPTY error", async () => {
+    const post = jest.fn().mockResolvedValue({ data: { candidates: [{ finishReason: "MAX_TOKENS" }] } });
+    const llm = createVertexChat({ config: cfg, getAccessToken: async () => "t", http: { post } });
+    await expect(llm.complete({ messages })).rejects.toMatchObject({ code: "LLM_EMPTY" });
+  });
+
+  test("model takes precedence over endpointId", async () => {
+    const post = jest.fn().mockResolvedValue(reply([{ text: "ok" }]));
+    const llm = createVertexChat({ config: { ...cfg, endpointId: "456" }, getAccessToken: async () => "t", http: { post } });
+    await llm.complete({ messages });
+    expect(post.mock.calls[0][0]).toContain("generateContent");
+  });
+});
+
 describe("googleTts", () => {
   const cfg = { timeoutMs: 50, retries: 1, languageCode: "en-US", voiceName: "v" };
   test("times out and retries", async () => {

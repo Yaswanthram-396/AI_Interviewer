@@ -1,10 +1,18 @@
 "use client";
-import InterviewBot from "@/app/components/interviewBot";
-import { useParams } from "next/navigation";
 
-const AttemptInterview = () => {
-    const { id } = useParams();
-    // Ensure id is always a string
-    return <InterviewBot id={typeof id === "string" ? id : ""} />;
+import { useParams } from "next/navigation";
+import { LiveRoom } from "@/features/room/LiveRoom";
+import { RequireRole } from "@/features/session/RequireRole";
+
+/**
+ * Legacy deep link to a *backend* interview id. It opens the same live room used by published
+ * interviews, so existing links keep working.
+ */
+export default function LegacyLiveInterviewPage() {
+  const { id } = useParams<{ id: string }>();
+  return (
+    <RequireRole portal="candidate">
+      <LiveRoom backendId={typeof id === "string" ? id : ""} />
+    </RequireRole>
+  );
 }
-export default AttemptInterview

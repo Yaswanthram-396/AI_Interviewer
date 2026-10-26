@@ -121,31 +121,31 @@ describe("turn lifecycle", () => {
     expect(c.count((m) => m.type === "tts_audio")).toBe(1);
   });
 
-  test("concurrent turns are serialized and answered in order", async () => {
+  test("sequential turns are answered in order and later turns see earlier ones in history", async () => {
     t = await startTestServer();
     const { c } = await openSession(t.url);
-    for (const id of ["turn-con-0001", "turn-con-0002", "turn-con-0003"]) c.send(turnMsg(id, `answer ${id}`));
-    await c.waitFor((m) => m.type === "tts_audio" && m.turnId === "turn-con-0003");
+    for (const id of ["turn-con-0001", "turn-con-0002", "turn-con-0003"]) {
+      c.send(turnMsg(id, `answer ${id}`));
+      await c.waitFor((m) => m.type === "tts_audio" && m.turnId === id);
+    }
     expect(t.llm.maxInFlight).toBe(1);
     expect(c.inbox.filter((m) => m.type === "tts_audio").map((m) => m.turnId)).toEqual([
       "turn-con-0001",
       "turn-con-0002",
       "turn-con-0003",
     ]);
-    // later turns see earlier turns in history
     expect(t.llm.calls[2].filter((m) => m.role === "user")).toHaveLength(3);
   });
 
-  test("excess queued turns are rejected with BUSY", async () => {
-    t = await startTestServer({ env: { WS_MAX_QUEUED_TURNS: "1" } });
+  test("a greeting cannot be started while another turn is in progress (BUSY)", async () => {
+    t = await startTestServer();
     t.llm.gate = new Promise(() => {});
     const { c } = await openSession(t.url);
     c.send(turnMsg("turn-bus-0001"));
     await c.waitFor((m) => m.state === "llm");
-    c.send(turnMsg("turn-bus-0002"));
-    c.send(turnMsg("turn-bus-0003"));
+    c.send({ type: "start_interview", turnId: "turn-bus-0002" });
     const err = await c.waitFor((m) => m.code === "BUSY");
-    expect(err.turnId).toBe("turn-bus-0003");
+    expect(err).toMatchObject({ turnId: "turn-bus-0002", retryable: true });
   });
 
   test("LLM failure returns a retryable error; same turnId can be retried", async () => {
@@ -228,18 +228,21 @@ describe("interruption", () => {
     t = await startTestServer();
     t.llm.gate = new Promise(() => {});
     const { c } = await openSession(t.url);
-    c.send(turnMsg("turn-int-0001"));
+    c.send(turnMsg("turn-int-0001", "answer one"));
     await c.waitFor((m) => m.state === "llm");
-    c.send(turnMsg("turn-int-0002"));
+    c.send(turnMsg("turn-int-0002", "answer two"));
     c.send({ type: "interrupt" });
     await c.waitFor((m) => m.type === "turn_cancelled" && m.turnId === "turn-int-0001");
     await c.waitFor((m) => m.type === "turn_cancelled" && m.turnId === "turn-int-0002");
     expect(c.count((m) => m.type === "tts_audio")).toBe(0);
     // nothing from the cancelled turn reaches history, and the session still works
     t.llm.gate = null;
-    c.send(turnMsg("turn-int-0003"));
+    c.send(turnMsg("turn-int-0003", "answer three"));
     await c.waitFor((m) => m.type === "tts_audio" && m.turnId === "turn-int-0003");
-    expect(t.llm.calls[t.llm.calls.length - 1].filter((m) => m.role === "user")).toHaveLength(1);
+    const last = t.llm.calls[t.llm.calls.length - 1].filter((m) => m.role === "user");
+    expect(last).toHaveLength(1);
+    // what the candidate said before being interrupted is carried forward, not dropped
+    expect(last[0].content).toBe("answer one answer two answer three");
   });
 });
 

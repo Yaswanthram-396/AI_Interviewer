@@ -81,10 +81,12 @@ async function startTestServer(overrides = {}) {
     DEEPGRAM_API_KEY: "dg-test",
     WS_HEARTBEAT_MS: "60000",
     LLM_RETRIES: "0",
+    INTERVIEW_ENGINE: "freeform", // legacy tests use a plain-text fake LLM; engine tests opt in
     ...overrides.env,
   });
   Object.assign(config, overrides.config);
   const store = overrides.store || createMemoryStore({
+    access: overrides.access,
     interviews: {
       [INTERVIEW_ID]: { title: "Backend Engineer", description: "d", difficulty: "Beginner" },
       [OTHER_INTERVIEW_ID]: { title: "Other", description: "d", difficulty: "Beginner" },
@@ -95,7 +97,7 @@ async function startTestServer(overrides = {}) {
   const stt = createFakeStt();
   const metrics = new Metrics();
   const log = createLogger({}, { level: "error", write: () => {} });
-  const rt = createRealtimeServer({ deps: { config, store, llm, tts, stt, metrics, log }, port: 0 });
+  const rt = createRealtimeServer({ deps: { config, store, llm, tts, stt, metrics, log, auth: overrides.auth }, port: 0 });
   await new Promise((r) => rt.wss.on("listening", r));
   return { rt, config, store, llm, tts, stt, metrics, url: `ws://127.0.0.1:${rt.port()}` };
 }
@@ -148,9 +150,9 @@ function connect(url, options) {
   });
 }
 
-async function openSession(url, { interviewId = INTERVIEW_ID, resumeToken } = {}) {
+async function openSession(url, { interviewId = INTERVIEW_ID, resumeToken, accessToken } = {}) {
   const c = await connect(url);
-  c.send({ type: "hello", interviewId, resumeToken });
+  c.send({ type: "hello", interviewId, resumeToken, accessToken });
   const ready = await c.waitFor((m) => m.type === "session_ready" || m.type === "error");
   return { c, ready };
 }

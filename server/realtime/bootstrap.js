@@ -9,6 +9,7 @@ const { createVertexChat } = require("./providers/vertexChat");
 const { createGoogleTts } = require("./providers/googleTts");
 const { createDeepgramStt } = require("./providers/deepgramStt");
 const { createRealtimeServer } = require("./server");
+const { getAuth } = require("../auth");
 
 /** Wires real providers (Vertex, Google TTS, Deepgram, MongoDB) into the realtime server. */
 function startRealtimeServer({ port, env = process.env } = {}) {
@@ -23,7 +24,7 @@ function startRealtimeServer({ port, env = process.env } = {}) {
   for (const [k, v] of [
     ["DEEPGRAM_API_KEY", config.deepgram.apiKey],
     ["VERTEX_PROJECT_NUMBER", config.llm.projectNumber],
-    ["VERTEX_ENDPOINT_ID", config.llm.endpointId],
+    ["VERTEX_MODEL or VERTEX_ENDPOINT_ID", config.llm.model || config.llm.endpointId],
   ]) {
     if (!v) log.warn("config.missing", { variable: k });
   }
@@ -36,13 +37,20 @@ function startRealtimeServer({ port, env = process.env } = {}) {
   };
 
   const metrics = new Metrics();
+  const authApp = getAuth();
   const deps = {
     config,
+    auth: { enforced: authApp.config.enforced, authenticate: (t) => authApp.service.authenticate(t) },
     log,
     metrics,
     store: createMongoStore({
       InterviewSession: require("../models/interviewSession.model"),
       Interview: require("../models/Interview"),
+      InterviewAnswer: require("../models/interviewAnswer.model"),
+      InterviewEvaluation: require("../models/interviewEvaluation.model"),
+      InterviewTemplate: require("../models/interviewTemplate.model"),
+      InterviewTopic: require("../models/interviewTopic.model"),
+      InterviewQuestionBank: require("../models/interviewQuestionBank.model"),
     }),
     llm: createVertexChat({ config: config.llm, getAccessToken, log }),
     tts: createGoogleTts({ client: new TextToSpeechClient(), config: config.tts, log }),

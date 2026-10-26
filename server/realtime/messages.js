@@ -1,4 +1,5 @@
 const TURN_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const GENERATION_ID = /^gen_[A-Za-z0-9-]{8,64}$/;
 const OBJECT_ID = /^[a-f0-9]{24}$/i;
 const MAX_AUDIO_B64 = 96 * 1024;
 
@@ -33,7 +34,13 @@ function parseClientMessage(raw, isBinary, { maxTextChars = 4000, maxBytes = 128
       if (msg.resumeToken !== undefined && (typeof msg.resumeToken !== "string" || msg.resumeToken.length > 2048)) {
         return fail("INVALID_MESSAGE", "resumeToken is invalid");
       }
-      return { ok: true, msg: { type: "hello", interviewId: msg.interviewId, resumeToken: msg.resumeToken } };
+      if (msg.accessToken !== undefined && (typeof msg.accessToken !== "string" || msg.accessToken.length > 4096)) {
+        return fail("INVALID_MESSAGE", "accessToken is invalid");
+      }
+      return {
+        ok: true,
+        msg: { type: "hello", interviewId: msg.interviewId, resumeToken: msg.resumeToken, accessToken: msg.accessToken },
+      };
     }
     case "start_interview":
       if (!hasTurnId) return fail("INVALID_MESSAGE", "turnId is required");
@@ -53,8 +60,13 @@ function parseClientMessage(raw, isBinary, { maxTextChars = 4000, maxBytes = 128
       return { ok: true, msg: { type: "audio_chunk", audio: Buffer.from(msg.audioBase64, "base64") } };
     }
     case "playback_started":
+    case "playback_ended": {
       if (!hasTurnId) return fail("INVALID_MESSAGE", "turnId is required");
-      return { ok: true, msg: { type: "playback_started", turnId: msg.turnId } };
+      if (msg.generationId !== undefined && !(typeof msg.generationId === "string" && GENERATION_ID.test(msg.generationId))) {
+        return fail("INVALID_MESSAGE", "generationId is invalid");
+      }
+      return { ok: true, msg: { type: msg.type, turnId: msg.turnId, generationId: msg.generationId } };
+    }
     case "start_stt":
     case "stop_stt":
     case "interrupt":

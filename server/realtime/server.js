@@ -3,6 +3,7 @@ const WebSocket = require("ws");
 const { parseClientMessage } = require("./messages");
 const { InterviewSession } = require("./session");
 const { createTokenService } = require("./sessionToken");
+const { canTakeInterview } = require("../auth/policies");
 
 /**
  * WebSocket transport. Responsibilities: origin check, hello/resume handshake,
@@ -13,6 +14,8 @@ const { createTokenService } = require("./sessionToken");
  */
 function createRealtimeServer({ deps, port, server }) {
   const { config, store, metrics, log } = deps;
+  // auth: { enforced, authenticate(accessToken) -> {id, role} | null }
+  const auth = deps.auth || { enforced: false, authenticate: async () => null };
   const tokens = createTokenService({ secret: config.tokenSecret, ttlSec: config.resumeTokenTtlSec });
   const sessions = new Map();
 
@@ -37,9 +40,29 @@ function createRealtimeServer({ deps, port, server }) {
     let session = null;
     let resumed = false;
 
+    // When enforced, the connection must belong to a signed-in candidate assigned to this interview.
+    let user = null;
+    if (auth.enforced) {
+      user = msg.accessToken ? await auth.authenticate(msg.accessToken) : null;
+      if (!user) {
+        metrics.inc("ws.unauthenticated");
+        return sendError(ws, "UNAUTHENTICATED", "Sign in required");
+      }
+      const access = await store.getInterviewAccess(msg.interviewId);
+      if (!access || !canTakeInterview(user, access)) {
+        metrics.inc("ws.forbidden");
+        return sendError(ws, "INTERVIEW_NOT_FOUND", "Interview not found"); // same answer as a missing interview
+      }
+    } else if (msg.accessToken) {
+      // Not enforced: identity stays optional (anonymous clients work as before), but a valid token still
+      // attributes the session, its assignment and its report to the signed-in candidate.
+      user = (await auth.authenticate(msg.accessToken)) ?? null;
+    }
+    const userId = user ? user.id : null;
+
     if (msg.resumeToken) {
       const claims = tokens.verify(msg.resumeToken);
-      if (!claims || claims.interviewId !== msg.interviewId) {
+      if (!claims || claims.interviewId !== msg.interviewId || claims.userId !== userId) {
         metrics.inc("ws.resume_rejected");
         return sendError(ws, "INVALID_RESUME_TOKEN", "Resume token is invalid or expired");
       }
@@ -55,6 +78,11 @@ function createRealtimeServer({ deps, port, server }) {
           interviewDetails: doc.interviewDetails,
           history: doc.history,
           expiresAt: doc.expiresAt,
+          userId: doc.userId ?? null,
+          userEmail: doc.userEmail ?? null,
+          userName: doc.userName ?? null,
+          engineSnapshot: doc.engineState ?? null,
+          conversationState: doc.conversationState ?? null,
           deps: sessionDeps,
         });
         sessions.set(session.id, session);
@@ -68,12 +96,25 @@ function createRealtimeServer({ deps, port, server }) {
       if (!details) return sendError(ws, "INTERVIEW_NOT_FOUND", "Interview not found");
       const sessionId = `sess_${crypto.randomUUID()}`;
       const expiresAt = new Date(Date.now() + config.sessionTtlMs);
-      await store.createSession({ sessionId, interviewId: msg.interviewId, interviewDetails: details, expiresAt });
+      await store.createSession({ sessionId, interviewId: msg.interviewId, interviewDetails: details, expiresAt, userId, userEmail: user?.email, userName: user?.name });
+      // The candidate's assignment moves to "In progress" (and is bound to their account) when they start.
+      if (user) {
+        // Bookkeeping only: if it fails the candidate must still be able to start the interview.
+        try {
+          await store.markAssignment?.(msg.interviewId, user, { status: "in_progress", startedAt: new Date(), sessionId }, { keepCompleted: true });
+        } catch (e) {
+          metrics.inc("assignment.update_failed");
+          log.warn("assignment.update_failed", { message: e.message });
+        }
+      }
       session = new InterviewSession({
         sessionId,
         interviewId: msg.interviewId,
         interviewDetails: details,
         expiresAt,
+        userId,
+        userEmail: user?.email ?? null,
+        userName: user?.name ?? null,
         deps: sessionDeps,
       });
       sessions.set(sessionId, session);
@@ -87,9 +128,12 @@ function createRealtimeServer({ deps, port, server }) {
     sendRaw(ws, {
       type: "session_ready",
       sessionId: session.id,
-      resumeToken: tokens.sign(session.id, session.interviewId),
+      resumeToken: tokens.sign(session.id, session.interviewId, userId),
       resumed,
       historyLength: session.history.length,
+      completed: session.completed,
+      bargeIn: session.bargeIn, // false: strict turn-taking, the client mutes the mic while the AI speaks
+      conversationState: session.engine ? session.conv.current : undefined,
       endOfTurn: config.endOfTurn,
     });
     if (resumed) session.replayUndelivered();
@@ -114,7 +158,9 @@ function createRealtimeServer({ deps, port, server }) {
       case "interrupt":
         return s.interrupt();
       case "playback_started":
-        return s.notePlaybackStarted(msg.turnId);
+        return s.notePlaybackStarted(msg.turnId, msg.generationId);
+      case "playback_ended":
+        return s.notePlaybackEnded(msg.turnId, msg.generationId);
       case "end_interview":
         s.end("client_ended");
         sessions.delete(s.id);

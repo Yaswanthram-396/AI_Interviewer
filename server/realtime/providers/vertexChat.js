@@ -1,13 +1,6 @@
 const axios = require("axios");
 const { ProviderError, withRetry } = require("../util");
-
-/** Accepts both documented Vertex chatCompletions response shapes. */
-function extractText(data) {
-  const p = data?.predictions;
-  const choices = p?.choices ?? p?.[0]?.choices ?? data?.choices;
-  const content = choices?.[0]?.message?.content;
-  return typeof content === "string" ? content.trim() : "";
-}
+const { selectVertexProtocol, extractChatCompletionsText: extractText } = require("./vertexProtocols");
 
 function classify(e) {
   if (e instanceof ProviderError) return e;
@@ -24,24 +17,17 @@ function classify(e) {
 }
 
 /**
- * Vertex AI dedicated-endpoint chat provider (non-streaming).
- * `getAccessToken` is injected so tests do not need Google credentials.
+ * Vertex AI chat provider (non-streaming). Uses serverless Gemini when `config.model` is set,
+ * otherwise a dedicated endpoint. `getAccessToken` is injected so tests need no Google credentials.
  */
 function createVertexChat({ config, getAccessToken, http = axios, log }) {
-  const { projectNumber, endpointId, location, timeoutMs, retries, maxTokens, temperature, topP } = config;
+  const { timeoutMs, retries } = config;
+  const protocol = selectVertexProtocol(config);
 
-  function endpointUrl() {
-    if (!projectNumber || !endpointId) {
-      throw new ProviderError("LLM_CONFIG", "VERTEX_PROJECT_NUMBER and VERTEX_ENDPOINT_ID must be set");
-    }
-    return (
-      `https://${endpointId}.${location}-${projectNumber}.prediction.vertexai.goog` +
-      `/v1/projects/${projectNumber}/locations/${location}/endpoints/${endpointId}:predict`
-    );
-  }
-
-  async function complete({ messages, signal, requestId }) {
-    const url = endpointUrl();
+  /** `json` asks for a JSON object; `maxTokens` overrides the default reply cap for this call. */
+  async function complete({ messages, signal, requestId, json = false, maxTokens }) {
+    const url = protocol.url(config);
+    const callConfig = maxTokens ? { ...config, maxTokens } : config;
     const started = performance.now();
     const text = await withRetry(
       async (attempt) => {
@@ -58,18 +44,14 @@ function createVertexChat({ config, getAccessToken, http = axios, log }) {
           const token = await getAccessToken();
           const res = await http.post(
             url,
-            {
-              instances: [
-                { "@requestFormat": "chatCompletions", messages, max_tokens: maxTokens, temperature, top_p: topP },
-              ],
-            },
+            protocol.body(messages, callConfig, { json }),
             {
               headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
               signal: controller.signal,
               timeout: timeoutMs,
             }
           );
-          const out = extractText(res.data);
+          const out = protocol.extractText(res.data);
           if (!out) throw new ProviderError("LLM_EMPTY", "LLM returned no text", { retryable: true });
           return out;
         } catch (e) {

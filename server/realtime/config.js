@@ -12,7 +12,6 @@ function loadRealtimeConfig(env = process.env) {
     allowedOrigins: (env.CORS_ORIGIN || "").split(",").map((s) => s.trim()).filter(Boolean),
     messageRate: { max: int(env.WS_MSG_RATE_MAX, 40), windowMs: int(env.WS_MSG_RATE_WINDOW_MS, 10000) },
     maxPendingInbound: int(env.WS_MAX_PENDING_INBOUND, 500),
-    maxQueuedTurns: int(env.WS_MAX_QUEUED_TURNS, 3),
     maxOutboundBufferBytes: int(env.WS_MAX_OUTBOUND_BUFFER, 2 * 1024 * 1024),
 
     sessionTtlMs: int(env.SESSION_TTL_MS, 15 * 60 * 1000),
@@ -44,8 +43,30 @@ function loadRealtimeConfig(env = process.env) {
       maxBufferedBytes: int(env.DEEPGRAM_MAX_BUFFERED_BYTES, 1024 * 1024),
     },
 
+    interview: {
+      // "freeform" keeps the legacy prompt-only behaviour as a rollback switch.
+      engine: env.INTERVIEW_ENGINE === "freeform" ? "freeform" : "structured",
+      maxMainQuestions: int(env.INTERVIEW_MAX_QUESTIONS, 5),
+      maxFollowUps: int(env.INTERVIEW_MAX_FOLLOWUPS, 2),
+      maxClarifications: int(env.INTERVIEW_MAX_CLARIFICATIONS, 1),
+      maxRepeats: int(env.INTERVIEW_MAX_REPEATS, 2),
+      historyWindow: int(env.INTERVIEW_HISTORY_WINDOW, 6),
+      // Template interviews: a topic that has used this multiple of its allocated time is skipped past (see engine._closeOverrunTopics).
+      topicOverrunFactor: Number(env.INTERVIEW_TOPIC_OVERRUN_FACTOR) > 1 ? Number(env.INTERVIEW_TOPIC_OVERRUN_FACTOR) : 1.5,
+      analysisMaxTokens: int(env.INTERVIEW_ANALYSIS_MAX_TOKENS, 1000),
+      questionMaxTokens: int(env.INTERVIEW_QUESTION_MAX_TOKENS, 500),
+      assistMaxTokens: int(env.INTERVIEW_ASSIST_MAX_TOKENS, 200),
+      // false (default): strict turn-taking, the candidate's mic is ignored while the AI speaks.
+      // true: barge-in; the client keeps monitoring the mic (with echo cancellation) and may interrupt the AI.
+      bargeIn: env.INTERVIEW_BARGE_IN === "true",
+      // If the client never reports that playback finished, the candidate gets the floor back after this long.
+      playbackAckTimeoutMs: int(env.INTERVIEW_PLAYBACK_ACK_TIMEOUT_MS, 30000),
+    },
+
     llm: {
       projectNumber: env.VERTEX_PROJECT_NUMBER || null,
+      // Serverless Gemini model ID (e.g. from Model Garden). When set, it takes precedence over endpointId.
+      model: env.VERTEX_MODEL || null,
       endpointId: env.VERTEX_ENDPOINT_ID || null,
       location: env.VERTEX_LOCATION || "us-central1",
       timeoutMs: int(env.LLM_TIMEOUT_MS, 15000),

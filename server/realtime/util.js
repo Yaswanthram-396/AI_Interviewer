@@ -58,6 +58,33 @@ function withDeadline(promise, { ms, signal, code = "TIMEOUT", label = "operatio
   });
 }
 
+/**
+ * Rejects with ABORTED as soon as `signal` fires, without waiting for `promise`.
+ * This is *invalidation*, not termination: if the underlying SDK ignores the signal its work
+ * continues and its eventual result (or error) is discarded here.
+ */
+function raceAbort(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      promise.catch(() => {});
+      return reject(new ProviderError("ABORTED", "Aborted"));
+    }
+    const onAbort = () => reject(new ProviderError("ABORTED", "Aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
 /** Runs `fn(attempt)` with retries on retryable ProviderErrors. */
 async function withRetry(fn, { retries, backoffMs = 250, signal }) {
   let attempt = 0;
@@ -72,4 +99,4 @@ async function withRetry(fn, { retries, backoffMs = 250, signal }) {
   }
 }
 
-module.exports = { ProviderError, sleep, withDeadline, withRetry };
+module.exports = { ProviderError, sleep, withDeadline, withRetry, raceAbort };

@@ -2,7 +2,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Mic, Loader2, Clock, Video, MessageSquare, Wifi, Headphones, X, ChevronLeft, ChevronRight, Settings, Users, PhoneOff, Monitor, Maximize2 } from "lucide-react";
+import { authSession } from "@/features/auth/services/authSession.instance";
+import { MicrophoneController, createBrowserMicrophoneDeps } from "@/features/interview/microphoneController";
+import {
+  canStartRecording,
+  initialTurnState,
+  isMicMuted,
+  shouldAutoListen,
+  turnReducer,
+  type TurnEvent,
+  type TurnState,
+} from "@/features/interview/interviewTurnMachine";
+import { RoomView, type RoomMessage } from "@/features/room/RoomView";
 
 interface ConversationMessage {
   id: number;
@@ -14,6 +25,7 @@ interface ConversationMessage {
 interface TTSResponse {
   type: "tts_audio";
   turnId: string;
+  generationId?: string;
   audioBase64: string | null;
   text: string;
   ttsError?: string;
@@ -29,6 +41,9 @@ interface SessionReady {
   sessionId: string;
   resumeToken: string;
   resumed: boolean;
+  completed?: boolean;
+  /** false = strict turn-taking (mic is muted while the AI speaks); true = the candidate may interrupt. */
+  bargeIn?: boolean;
 }
 
 interface STTStartedResponse {
@@ -45,9 +60,11 @@ interface UserTurnCommitted {
 interface TurnCancelled {
   type: "turn_cancelled";
   turnId: string;
+  generationId?: string;
+  reason?: string;
 }
 
-interface TurnState {
+interface TurnStateMessage {
   type: "turn_state";
   turnId: string;
   state: string;
@@ -60,6 +77,18 @@ interface SessionEnded {
 
 interface SpeechStarted {
   type: "speech_started" | "pong";
+}
+
+// Interview-engine events. The server never sends scores or feedback to the candidate.
+interface InterviewCompleted {
+  type: "interview_completed";
+  reason: string;
+}
+
+interface InterviewEvent {
+  type: "interview_state" | "answer_evaluated" | "next_question";
+  mainIndex?: number;
+  totalMain?: number;
 }
 
 interface ErrorResponse {
@@ -77,9 +106,11 @@ type WSMessage =
   | SessionReady
   | UserTurnCommitted
   | TurnCancelled
-  | TurnState
+  | TurnStateMessage
   | SessionEnded
   | SpeechStarted
+  | InterviewCompleted
+  | InterviewEvent
   | ErrorResponse;
 
 const newTurnId = () => `turn_${crypto.randomUUID()}`;
@@ -105,15 +136,27 @@ const writeResumeToken = (interviewId: string, token: string | null) => {
 
 const MAX_RECONNECT_ATTEMPTS = 8;
 
-const InterviewBot = ({ id }: { id: string }) => {
+interface InterviewBotProps {
+  /** Backend interview id (24-hex ObjectId). */
+  id: string;
+  title?: string;
+  subtitle?: string;
+  durationMinutes?: number;
+  /** Called after the closing line has played, or when the candidate ends the interview. */
+  onFinished?: (reason: "completed" | "ended", sessionId: string | null) => void;
+}
+
+const InterviewBot = ({ id, title, subtitle, durationMinutes = 15, onFinished }: InterviewBotProps) => {
+  const totalSeconds = durationMinutes * 60;
+  const onFinishedRef = useRef(onFinished);
+  onFinishedRef.current = onFinished;
+  // The server's session id: it is also the id of the report this interview produces.
+  const sessionIdRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const userVideoRef = useRef<HTMLVideoElement>(null);
   const sessionRecorderRef = useRef<MediaRecorder | null>(null);
   const sessionChunksRef = useRef<BlobPart[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const audioStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
 
   const isRecordingRef = useRef<boolean>(false);
   const isSTTStreamReadyRef = useRef<boolean>(false);
@@ -121,16 +164,28 @@ const InterviewBot = ({ id }: { id: string }) => {
   const [conversation, setConversation] = useState<ConversationMessage[]>([]);
   const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
   const [isRecording, setIsRecording] = useState(false);
-  const [isBotSpeaking, setIsBotSpeaking] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isMicStarting, setIsMicStarting] = useState(false);
+
+  // Whose turn it is lives in one place. `turnRef` mirrors it synchronously for socket callbacks.
+  const [turn, setTurn] = useState<TurnState>(initialTurnState);
+  const turnRef = useRef<TurnState>(initialTurnState);
+  /** Applies an event; returns false when it was stale/ignored and changed nothing. */
+  const dispatchTurn = useCallback((event: TurnEvent) => {
+    const next = turnReducer(turnRef.current, event);
+    if (next === turnRef.current) return false;
+    turnRef.current = next;
+    setTurn(next);
+    return true;
+  }, []);
   const [liveTranscript, setLiveTranscript] = useState("");
-  const [timeRemaining, setTimeRemaining] = useState(15 * 60);
+  const [timeRemaining, setTimeRemaining] = useState(durationMinutes * 60);
   const [sessionStarted, setSessionStarted] = useState(false);
   const [sessionRecordingUrl, setSessionRecordingUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSTTStreamReady, setIsSTTStreamReady] = useState(false);
-  const [isChatOpen, setIsChatOpen] = useState(true);
-  const conversationEndRef = useRef<HTMLDivElement>(null);
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
+  const micLevelRef = useRef(0);
   const [sessionReady, setSessionReady] = useState(false);
 
   const reconnectAttemptsRef = useRef(0);
@@ -139,30 +194,22 @@ const InterviewBot = ({ id }: { id: string }) => {
   const helloRetriedRef = useRef(false);
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const playbackSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const cancelledTurnsRef = useRef<Set<string>>(new Set());
   const playedTurnsRef = useRef<Set<string>>(new Set());
-  const pendingTurnRef = useRef<string | null>(null);
   const liveFragmentsRef = useRef<string[]>([]);
-  const isBotSpeakingRef = useRef(false);
-  const isLoadingRef = useRef(false);
+  // Set when the microphone is refused, so auto-listening does not retry in a loop; a click clears it.
+  const autoListenBlockedRef = useRef(false);
   // Latest handlers for socket callbacks (avoids stale closures without re-creating the socket).
-  const latestRef = useRef<{ stopRecording: () => void; endSession: (reconnect?: boolean) => void }>({
+  const latestRef = useRef<{
+    stopRecording: () => void;
+    endSession: (reconnect?: boolean) => void;
+    startRecording: () => Promise<void>;
+    onMicLost: () => void;
+  }>({
     stopRecording: () => {},
     endSession: () => {},
+    startRecording: async () => {},
+    onMicLost: () => {},
   });
-
-  const setLoading = (v: boolean) => {
-    isLoadingRef.current = v;
-    setIsLoading(v);
-  };
-  const setBotSpeaking = (v: boolean) => {
-    isBotSpeakingRef.current = v;
-    setIsBotSpeaking(v);
-  };
-
-  const scrollToBottom = () => {
-    conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
 
   const addMessage = useCallback((sender: "bot" | "user", text: string, isAudio: boolean = false) => {
     setConversation((prev) => [...prev, { id: Date.now() + Math.random(), sender, text, isAudio }]);
@@ -185,33 +232,42 @@ const InterviewBot = ({ id }: { id: string }) => {
     return true;
   }, []);
 
-  const convertFloat32ToInt16 = (buffer: Float32Array) => {
-    const l = buffer.length;
-    const buf = new Int16Array(l);
-    for (let i = 0; i < l; i++) {
-      const sample = Math.max(-1, Math.min(1, buffer[i] * 2)); // Boost volume
-      buf[i] = sample * 0x7fff;
-    }
-    return buf.buffer;
-  };
-
   // Begin the interview: the server greets the candidate. The turnId correlates the reply.
   const requestGreeting = () => {
     const turnId = newTurnId();
-    pendingTurnRef.current = turnId;
-    setLoading(true);
+    dispatchTurn({ type: "GREETING_REQUESTED", turnId });
     if (!sendJson({ type: "start_interview", turnId })) {
-      setLoading(false);
+      dispatchTurn({ type: "TURN_FAILED", turnId });
       addMessage("bot", "Connection not ready. Please wait for connection or refresh.", false);
     }
   };
 
-  // Raw PCM16 goes over the socket as a binary frame.
+  // Raw PCM16 goes over the socket as a binary frame. Nothing is sent while the AI holds the floor
+  // (the microphone gate already mutes the track; this is the second line of defence).
   const sendAudioData = useCallback((audioData: ArrayBuffer) => {
     if (!isRecordingRef.current || !isSTTStreamReadyRef.current) return;
+    if (isMicMuted(turnRef.current)) return;
+    const samples = new Int16Array(audioData);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 8) sum += (samples[i] / 32768) ** 2;
+    micLevelRef.current = Math.min(1, Math.sqrt(sum / Math.ceil(samples.length / 8)) * 4);
     if (audioData.byteLength === 0) return;
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) ws.send(audioData);
+  }, []);
+
+  // The interviewer's closing line must finish playing before the session is torn down.
+  const interviewCompletedRef = useRef(false);
+  const audioPendingRef = useRef(false);
+  const finishIfCompleted = useCallback(() => {
+    if (!interviewCompletedRef.current || audioPendingRef.current || playbackSourceRef.current) return;
+    interviewCompletedRef.current = false;
+    if (onFinishedRef.current) {
+      latestRef.current.endSession(false);
+      onFinishedRef.current("completed", sessionIdRef.current);
+    } else {
+      latestRef.current.endSession(true);
+    }
   }, []);
 
   const stopPlayback = useCallback(() => {
@@ -225,12 +281,12 @@ const InterviewBot = ({ id }: { id: string }) => {
         /* already stopped */
       }
     }
-    setBotSpeaking(false);
   }, []);
 
-  // Complete-response playback: the whole MP3 is decoded before it starts.
+  // Complete-response playback: the whole MP3 is decoded before it starts. The AI keeps the floor until
+  // the audio has actually finished here, and only then is the server told (playback_ended).
   const playBotAudio = useCallback(
-    async (turnId: string, audioBase64: string) => {
+    async (turnId: string, generationId: string | undefined, audioBase64: string) => {
       if (!playbackCtxRef.current) {
         const Ctx = window.AudioContext || (window as any).webkitAudioContext;
         playbackCtxRef.current = new Ctx();
@@ -239,72 +295,105 @@ const InterviewBot = ({ id }: { id: string }) => {
       if (ctx.state === "suspended") await ctx.resume();
       const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0)).buffer;
       const decoded = await ctx.decodeAudioData(bytes);
-      if (cancelledTurnsRef.current.has(turnId)) return;
+      // The reply may have been superseded or interrupted while it was decoding: never play stale audio.
+      if (turnRef.current.speakingTurnId !== turnId) return false;
       stopPlayback();
       const source = ctx.createBufferSource();
       source.buffer = decoded;
       source.connect(ctx.destination);
       source.onended = () => {
-        if (playbackSourceRef.current === source) {
-          playbackSourceRef.current = null;
-          setBotSpeaking(false);
-        }
+        if (playbackSourceRef.current !== source) return; // stopped or replaced locally: nothing to report
+        playbackSourceRef.current = null;
+        sendJson({ type: "playback_ended", turnId, generationId });
+        dispatchTurn({ type: "PLAYBACK_ENDED", turnId, generationId });
+        finishIfCompleted();
       };
       playbackSourceRef.current = source;
-      setBotSpeaking(true);
       source.start(0);
-      sendJson({ type: "playback_started", turnId });
+      sendJson({ type: "playback_started", turnId, generationId });
+      return true;
     },
-    [sendJson, stopPlayback]
+    [sendJson, stopPlayback, finishIfCompleted, dispatchTurn]
   );
 
-  // Candidate started talking over a pending/playing reply: cancel it server-side too.
+  // Barge-in only: the candidate talked over a pending/playing reply. Stop it here and cancel it server-side.
   const interruptBot = useCallback(() => {
-    if (pendingTurnRef.current) cancelledTurnsRef.current.add(pendingTurnRef.current);
+    if (!dispatchTurn({ type: "INTERRUPTED" })) return;
     stopPlayback();
-    setLoading(false);
     sendJson({ type: "interrupt" });
-  }, [sendJson, stopPlayback]);
+  }, [sendJson, stopPlayback, dispatchTurn]);
+
+  // The first message authenticates the connection; a stored resume token continues a dropped session.
+  const sendHello = useCallback(
+    async (resumeToken?: string) => {
+      const accessToken = (await authSession.getAccessToken()) ?? undefined;
+      sendJson({ type: "hello", interviewId: id, resumeToken, accessToken });
+    },
+    [id, sendJson]
+  );
 
   const handleServerMessage = useCallback(
     async (data: WSMessage) => {
       switch (data.type) {
         case "session_ready": {
           writeResumeToken(id, data.resumeToken);
+          sessionIdRef.current = data.sessionId;
           reconnectAttemptsRef.current = 0;
           helloRetriedRef.current = false;
           setSessionReady(true);
           setWsStatus("connected");
+          dispatchTurn({ type: "SESSION_READY", bargeIn: !!data.bargeIn, completed: data.completed, resumed: data.resumed });
           break;
         }
         case "tts_audio": {
           // The server replays responses after duplicates/resume; play each turn once.
-          if (playedTurnsRef.current.has(data.turnId) || cancelledTurnsRef.current.has(data.turnId)) break;
+          if (playedTurnsRef.current.has(data.turnId)) break;
+          // The turn machine rejects replies for cancelled or superseded turns (stale audio is never shown or played).
+          if (!dispatchTurn({ type: "REPLY_RECEIVED", turnId: data.turnId, generationId: data.generationId, hasAudio: !!data.audioBase64 })) break;
           playedTurnsRef.current.add(data.turnId);
-          setLoading(false);
           addMessage("bot", data.text, true);
           if (data.audioBase64) {
+            audioPendingRef.current = true;
             try {
-              await playBotAudio(data.turnId, data.audioBase64);
+              await playBotAudio(data.turnId, data.generationId, data.audioBase64);
             } catch (e) {
               console.error("Audio playback failed:", e);
               setErrorMessage("Could not play the interviewer's audio. The text is shown instead.");
+              // Nothing is playing, so hand the floor back instead of leaving the interview waiting.
+              if (dispatchTurn({ type: "PLAYBACK_ENDED", turnId: data.turnId, generationId: data.generationId })) {
+                sendJson({ type: "playback_ended", turnId: data.turnId, generationId: data.generationId });
+              }
+            } finally {
+              audioPendingRef.current = false;
             }
           } else {
             setErrorMessage("Voice is temporarily unavailable. The text is shown instead.");
+            sendJson({ type: "playback_ended", turnId: data.turnId, generationId: data.generationId }); // nothing to wait for
           }
+          finishIfCompleted();
           break;
         }
+        case "interview_completed":
+          interviewCompletedRef.current = true;
+          dispatchTurn({ type: "INTERVIEW_COMPLETED" });
+          addMessage("bot", "The interview is complete. Thank you!", false);
+          finishIfCompleted();
+          break;
+        case "next_question":
+          // The introduction is index 0; real questions are numbered from 1.
+          if (typeof data.mainIndex === "number" && data.mainIndex > 0 && typeof data.totalMain === "number") setProgress({ current: data.mainIndex, total: data.totalMain });
+          break;
+        case "interview_state":
+        case "answer_evaluated":
+          break; // progress events; the UI is driven by playback and transcript state
         case "user_turn_committed":
           liveFragmentsRef.current = [];
           setLiveTranscript("");
-          pendingTurnRef.current = data.turnId;
           addMessage("user", data.text, true);
-          setLoading(true);
+          dispatchTurn({ type: "TURN_COMMITTED", turnId: data.turnId });
           break;
         case "turn_cancelled":
-          cancelledTurnsRef.current.add(data.turnId);
-          if (pendingTurnRef.current === data.turnId) setLoading(false);
+          dispatchTurn({ type: "TURN_CANCELLED", turnId: data.turnId });
           break;
         case "turn_state":
           break;
@@ -322,7 +411,9 @@ const InterviewBot = ({ id }: { id: string }) => {
           }
           break;
         case "speech_started":
-          if (isBotSpeakingRef.current || isLoadingRef.current) interruptBot();
+          // Only with barge-in. In strict mode the server ignores the mic while the AI speaks, and speech during
+          // "thinking" is handled server-side: the new answer supersedes the old one and carries its text.
+          if (turnRef.current.bargeIn) interruptBot();
           break;
         case "pong":
           break;
@@ -343,19 +434,20 @@ const InterviewBot = ({ id }: { id: string }) => {
             writeResumeToken(id, null);
             if (!helloRetriedRef.current) {
               helloRetriedRef.current = true;
-              sendJson({ type: "hello", interviewId: id });
+              await sendHello();
               break;
             }
           }
           setErrorMessage(data.message);
-          if (data.turnId && data.turnId === pendingTurnRef.current) setLoading(false);
+          // A failed turn hands the floor back; an error about an older turn does not disturb the current one.
+          if (data.type === "error") dispatchTurn({ type: "TURN_FAILED", turnId: data.turnId });
           break;
         }
         default:
           console.warn("Unknown message type:", data);
       }
     },
-    [id, addMessage, playBotAudio, interruptBot, sendJson]
+    [id, addMessage, playBotAudio, interruptBot, sendJson, sendHello, finishIfCompleted, dispatchTurn]
   );
 
   const startWebSocket = useCallback(() => {
@@ -367,7 +459,7 @@ const InterviewBot = ({ id }: { id: string }) => {
 
     ws.onopen = () => {
       // First message must identify the interview; a stored token resumes the prior session.
-      ws.send(JSON.stringify({ type: "hello", interviewId: id, resumeToken: readResumeToken(id) }));
+      void sendHello(readResumeToken(id));
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -375,7 +467,7 @@ const InterviewBot = ({ id }: { id: string }) => {
         void handleServerMessage(JSON.parse(event.data) as WSMessage);
       } catch (e) {
         console.error("Error processing WebSocket message:", e);
-        setLoading(false);
+        dispatchTurn({ type: "TURN_FAILED" });
         setErrorMessage("Failed to process server message");
       }
     };
@@ -384,7 +476,7 @@ const InterviewBot = ({ id }: { id: string }) => {
       if (wsRef.current === ws) wsRef.current = null;
       setWsStatus("disconnected");
       setSessionReady(false);
-      setLoading(false);
+      dispatchTurn({ type: "DISCONNECTED" });
       setIsSTTStreamReady(false);
       isSTTStreamReadyRef.current = false;
       latestRef.current.stopRecording();
@@ -401,111 +493,109 @@ const InterviewBot = ({ id }: { id: string }) => {
     ws.onerror = (err) => {
       console.error("WebSocket error:", err);
     };
-  }, [id, handleServerMessage]);
+  }, [id, handleServerMessage, sendHello, dispatchTurn]);
+
+// One microphone for the whole interview: a single capture, a gate that mutes it while the AI speaks,
+// and one place that releases every audio resource.
+const micRef = useRef<MicrophoneController | null>(null);
+if (!micRef.current) {
+  micRef.current = new MicrophoneController(
+    createBrowserMicrophoneDeps((pcm) => sendAudioData(pcm), { onEnded: () => latestRef.current.onMicLost() })
+  );
+}
+const mic = micRef.current;
 
 const startRecording = async () => {
-  if (!sessionStarted || wsStatus !== "connected" || isRecording) return;
+  // Not the candidate's turn (e.g. the AI is speaking) or already capturing: ignore, however fast this is clicked.
+  if (!canStartRecording(turnRef.current, { sessionStarted, connected: wsStatus === "connected" })) return;
+  if (isRecordingRef.current || mic.state !== "idle") return;
 
   setIsSTTStreamReady(false);
   isSTTStreamReadyRef.current = false;
   setLiveTranscript("");
-  setIsLoading(true);
-  const recordStartTime = performance.now();
+  setIsMicStarting(true);
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        sampleRate: 16000,
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
-    audioStreamRef.current = stream;
-
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    audioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
-
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    await audioContextRef.current.audioWorklet.addModule("/pcm-processor.js");
-    const workletNode = new AudioWorkletNode(audioContextRef.current, "pcm-processor");
-    workletNodeRef.current = workletNode;
-
-    workletNode.port.onmessage = (event) => {
-      if (!isRecordingRef.current) return;
-      const inputData = event.data as Float32Array;
-      const pcmData = convertFloat32ToInt16(inputData);
-      sendAudioData(pcmData);
-    };
-
-    source.connect(workletNode);
-    workletNode.connect(audioContextRef.current.destination);
-
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({ type: "start_stt" })
-      );
-      console.log(`🎤 Sent start_stt at ${performance.now() - recordStartTime}ms`);
+    if (!(await mic.start())) {
+      setIsMicStarting(false); // stopped while the permission prompt was open
+      return;
     }
-  } catch (error: any) {
-    console.error("Error accessing microphone:", error.message);
-    addMessage(
-      "bot",
-      `Could not start microphone: ${error.message}. Check permissions.`,
-      false
-    );
+    mic.setGate(!isMicMuted(turnRef.current));
+    sendJson({ type: "start_stt" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("Error accessing microphone:", message);
+    autoListenBlockedRef.current = true; // do not retry by itself; a click will
+    addMessage("bot", `Could not start microphone: ${message}. Check permissions.`, false);
     cleanup();
     setIsRecording(false);
-    setIsLoading(false);
+    setIsMicStarting(false);
     setIsSTTStreamReady(false);
     isSTTStreamReadyRef.current = false;
   }
 };
 
+  // Releases the stream, worklet and audio context (also cancels a start that is still in flight).
   const cleanup = () => {
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach((track) => track.stop());
-      audioStreamRef.current = null;
-    }
-    if (workletNodeRef.current) {
-      workletNodeRef.current.disconnect();
-      workletNodeRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
+    mic.stop();
   };
 
 const stopRecording = () => {
-  if (isRecording) {
-    isRecordingRef.current = false;
-    setIsRecording(false);
-    setIsSTTStreamReady(false);
-    isSTTStreamReadyRef.current = false;
-    cleanup();
-    
-    // 1. Tell the server to finalize any remaining audio
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({ type: "stop_stt" })
-      );
-    }
-    console.log("🛑 Recording stopped. Waiting for final fragments...");
+  const wasRecording = isRecordingRef.current;
+  isRecordingRef.current = false;
+  setIsRecording(false);
+  setIsMicStarting(false);
+  setIsSTTStreamReady(false);
+  isSTTStreamReadyRef.current = false;
+  cleanup();
+  if (!wasRecording) return;
+  // Tell the server to finalize any remaining audio; it commits whatever was heard (manual end of turn).
+  sendJson({ type: "stop_stt" });
+};
 
-    // 2. The server commits whatever was heard when it receives stop_stt (manual end of turn).
-  }
+// The input device disappeared (unplugged, permission revoked) while recording.
+const handleMicLost = () => {
+  isRecordingRef.current = false;
+  setIsRecording(false);
+  setIsMicStarting(false);
+  setIsSTTStreamReady(false);
+  isSTTStreamReadyRef.current = false;
+  autoListenBlockedRef.current = true;
+  sendJson({ type: "stop_stt" });
+  setErrorMessage("The microphone was disconnected. Reconnect it and press the microphone button.");
 };
 
   useEffect(() => {
-    if (isSTTStreamReady && audioContextRef.current && !isRecording) {
+    if (isSTTStreamReady && mic.state === "recording" && !isRecording) {
       isRecordingRef.current = true;
       setIsRecording(true);
-      setIsLoading(false);
-      console.log("✅ Started PCM audio streaming");
+      setIsMicStarting(false);
     }
-  }, [isSTTStreamReady, isRecording]);
+  }, [isSTTStreamReady, isRecording, mic]);
+
+  // The microphone follows the turn: muted while the AI speaks (strict turn-taking), live otherwise.
+  useEffect(() => {
+    mic.setGate(!isMicMuted(turn));
+  }, [turn, mic]);
+
+  // Audio that is no longer the current reply (cancelled, superseded, a new candidate turn) is silenced at once.
+  useEffect(() => {
+    if (turn.phase !== "AI_SPEAKING" && playbackSourceRef.current) stopPlayback();
+  }, [turn.phase, stopPlayback]);
+
+  // CANCELLED is shown briefly, then the candidate has the floor again.
+  useEffect(() => {
+    if (turn.phase !== "CANCELLED") return;
+    const timer = setTimeout(() => dispatchTurn({ type: "SETTLE" }), 700);
+    return () => clearTimeout(timer);
+  }, [turn.phase, dispatchTurn]);
+
+  // When the AI has actually finished speaking, start listening again by itself.
+  useEffect(() => {
+    if (autoListenBlockedRef.current) return;
+    const ctx = { sessionStarted, connected: wsStatus === "connected", recording: isRecording || isMicStarting };
+    if (shouldAutoListen(turn, ctx)) void latestRef.current.startRecording();
+  }, [turn, sessionStarted, wsStatus, isRecording, isMicStarting]);
 
   const handleStartInterview = async () => {
     if (wsStatus !== "connected" || sessionStarted) return;
@@ -550,7 +640,7 @@ const stopRecording = () => {
       const startTime = Date.now();
       timerRef.current = setInterval(() => {
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        const remaining = 15 * 60 - elapsed;
+        const remaining = totalSeconds - elapsed;
         setTimeRemaining(remaining);
         if (remaining <= 0) endSession(true);
       }, 1000);
@@ -578,8 +668,10 @@ const stopRecording = () => {
     setIsSTTStreamReady(false);
     isRecordingRef.current = false;
     isSTTStreamReadyRef.current = false;
-    setTimeRemaining(15 * 60);
-    setLoading(false);
+    setTimeRemaining(totalSeconds);
+    dispatchTurn({ type: "DISCONNECTED" });
+    setIsMicStarting(false);
+    autoListenBlockedRef.current = false;
     liveFragmentsRef.current = [];
     setLiveTranscript("");
 
@@ -602,7 +694,6 @@ const stopRecording = () => {
       reconnectTimerRef.current = setTimeout(() => {
         intentionalCloseRef.current = false;
         playedTurnsRef.current.clear();
-        cancelledTurnsRef.current.clear();
         startWebSocket();
       }, 1000);
     }
@@ -612,7 +703,7 @@ const stopRecording = () => {
     }
   };
 
-  latestRef.current = { stopRecording, endSession };
+  latestRef.current = { stopRecording, endSession, startRecording, onMicLost: handleMicLost };
 
   useEffect(() => {
     intentionalCloseRef.current = false;
@@ -620,306 +711,51 @@ const stopRecording = () => {
     return () => latestRef.current.endSession(false);
   }, [startWebSocket]);
 
-  useEffect(() => scrollToBottom(), [conversation, liveTranscript]);
+  // Push the microphone level to the visualizer about ten times a second.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const next = isRecordingRef.current && !isMicMuted(turnRef.current) ? micLevelRef.current : 0;
+      setMicLevel((current) => (Math.abs(current - next) > 0.03 ? next : current));
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+  const messages: RoomMessage[] = conversation.map((message) => ({ id: String(message.id), sender: message.sender === "bot" ? "ai" : "candidate", text: message.text }));
+  const connected = wsStatus === "connected";
+  const micState: "off" | "starting" | "live" | "muted" = isMicStarting ? "starting" : isMicMuted(turn) ? "muted" : isRecording ? "live" : "off";
+
+  const handleToggleMic = () => {
+    autoListenBlockedRef.current = false; // an explicit click re-enables automatic listening
+    if (isRecording) stopRecording();
+    else void startRecording();
   };
-
-  const renderStatusPill = (status: typeof wsStatus) => {
-    const statusClasses = {
-      connecting: "bg-yellow-100 text-yellow-800 border-yellow-300",
-      connected: "bg-green-100 text-green-800 border-green-300",
-      disconnected: "bg-red-100 text-red-800 border-red-300",
-    };
-    const statusText = {
-      connecting: "Connecting...",
-      connected: "Connected",
-      disconnected: "Disconnected",
-    };
-    return (
-      <div
-        className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-xs font-semibold border ${statusClasses[status]}`}
-      >
-        <div className={`w-2 h-2 rounded-full ${status === "connected" ? "bg-green-500" : status === "connecting" ? "bg-yellow-500 animate-pulse" : "bg-red-500"}`} />
-        <span>{statusText[status]}</span>
-      </div>
-    );
-  };
-
-  const renderMessage = (msg: ConversationMessage) => (
-    <div
-      key={msg.id}
-      className={`flex w-full ${msg.sender === "user" ? "justify-end" : "justify-start"} mb-3`}
-    >
-      <div
-        className={`max-w-[75%] p-3 rounded-2xl shadow-sm ${
-          msg.sender === "bot" 
-            ? "bg-gray-100 text-gray-900" 
-            : "bg-blue-600 text-white"
-        }`}
-      >
-        <div className="flex items-start space-x-2">
-          {msg.sender === "bot" && msg.isAudio && (
-            <Headphones size={14} className="mt-0.5 flex-shrink-0 text-blue-500" />
-          )}
-          {msg.sender === "user" && msg.isAudio && (
-            <Mic size={14} className="mt-0.5 flex-shrink-0 text-blue-200" />
-          )}
-          <p className="text-sm leading-relaxed">{msg.text}</p>
-        </div>
-      </div>
-    </div>
-  );
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="w-full h-screen flex flex-col relative bg-white">
-        {/* Header */}
-        <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 z-20">
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">AI</span>
-              </div>
-              <div>
-                <h1 className="text-sm font-semibold text-gray-900">AI Interview</h1>
-                <p className="text-xs text-gray-500">Franchise Earlyjobs</p>
-              </div>
-            </div>
-          </div>
-          
-          {sessionStarted && (
-            <div className="flex items-center space-x-3">
-              {renderStatusPill(wsStatus)}
-              <div className="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-red-50 text-red-700 text-xs font-semibold border border-red-200">
-                <Clock size={14} />
-                <span>{formatTime(timeRemaining)}</span>
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-center space-x-2">
-            <button className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-              <Settings size={18} className="text-gray-600" />
-            </button>
-            <button className="p-2 hover:bg-gray-100 rounded-lg transition-colors relative">
-              <Users size={18} className="text-gray-600" />
-              {sessionStarted && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">2</span>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Main Content */}
-        <div className="flex-1 relative flex">
-          {/* Video Grid */}
-          <div className={`flex-1 grid ${isChatOpen ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-2'} gap-4 p-4 bg-gray-900 transition-all duration-300`}>
-            {/* AI Bot Video */}
-            <div className="relative bg-gradient-to-br from-blue-900 to-purple-900 rounded-2xl overflow-hidden shadow-2xl">
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="relative">
-                  <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-2xl">
-                    <span className="text-5xl">{isBotSpeaking ? "🎙️" : "🤖"}</span>
-                  </div>
-                  {isBotSpeaking && (
-                    <div className="absolute inset-0 rounded-full border-4 border-blue-400 animate-ping opacity-50"></div>
-                  )}
-                </div>
-              </div>
-              <div className="absolute bottom-4 left-4 bg-black/40 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10">
-                <p className="text-white font-medium text-sm">AI Interviewer</p>
-              </div>
-              {!isBotSpeaking && (
-                <div className="absolute top-4 right-4 w-8 h-8 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center border border-white/10">
-                  <div className="w-4 h-4 bg-red-500 rounded-full"></div>
-                </div>
-              )}
-            </div>
-
-            {/* User Video */}
-            <div className="relative bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl overflow-hidden shadow-2xl">
-              <video 
-                ref={userVideoRef} 
-                autoPlay 
-                playsInline 
-                muted 
-                className="w-full h-full object-cover"
-              />
-              {!sessionStarted && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900">
-                  <div className="w-32 h-32 rounded-full bg-gradient-to-br from-gray-600 to-gray-700 flex items-center justify-center text-5xl font-bold text-white shadow-2xl">
-                    Y
-                  </div>
-                </div>
-              )}
-              <div className="absolute bottom-4 right-4 bg-black/40 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10">
-                <p className="text-white font-medium text-sm">You</p>
-              </div>
-              {!isRecording && sessionStarted && (
-                <div className="absolute top-4 right-4 w-8 h-8 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center border border-white/10">
-                  <div className="w-4 h-4 bg-red-500 rounded-full"></div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Chat Panel */}
-          {sessionStarted && (
-            <div 
-              className={`${
-                isChatOpen ? 'w-96' : 'w-0'
-              } bg-white border-l border-gray-200 flex flex-col transition-all duration-300 overflow-hidden`}
-            >
-              <div className="h-14 border-b border-gray-200 flex items-center justify-between px-4 flex-shrink-0">
-                <h3 className="font-semibold text-gray-900 flex items-center text-sm">
-                  <MessageSquare size={16} className="mr-2 text-blue-600" />
-                  Conversation
-                </h3>
-                <button 
-                  onClick={() => setIsChatOpen(false)}
-                  className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <X size={16} className="text-gray-500" />
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50 max-h-[75vh]">
-                {conversation.map(renderMessage)}
-                {isLoading && (
-                  <div className="flex justify-start">
-                    <div className="bg-gray-200 p-3 rounded-2xl">
-                      <Loader2 size={16} className="animate-spin text-blue-600" />
-                    </div>
-                  </div>
-                )}
-                {isRecording && liveTranscript && (
-                  <div className="flex justify-end">
-                    <div className="bg-blue-400 text-white p-3 rounded-2xl opacity-70 max-w-[75%]">
-                      <p className="text-sm">{liveTranscript}</p>
-                    </div>
-                  </div>
-                )}
-                <div ref={conversationEndRef} />
-              </div>
-            </div>
-          )}
-
-          {/* Chat Toggle Button (when chat is closed) */}
-          {sessionStarted && !isChatOpen && (
-            <button
-              onClick={() => setIsChatOpen(true)}
-              className="absolute right-4 top-1/2 -translate-y-1/2 bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full shadow-lg transition-all z-10"
-            >
-              <MessageSquare size={20} />
-            </button>
-          )}
-        </div>
-
-        {/* Control Bar */}
-        {sessionStarted && (
-          <div className="h-20 bg-white border-t border-gray-200 flex items-center justify-center px-6 z-20">
-            <div className="flex items-center space-x-3">
-              <button
-                onClick={isRecording ? stopRecording : startRecording}
-                disabled={!sessionStarted || isLoading || wsStatus !== "connected" || isSTTStreamReady || isBotSpeaking}
-                className={`w-12 h-12 rounded-full flex items-center justify-center transition-all shadow-md ${
-                  isRecording 
-                    ? "bg-red-500 hover:bg-red-600 text-white" 
-                    : "bg-gray-200 hover:bg-gray-300 text-gray-700"
-                } disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed`}
-                title={isRecording ? "Stop Speaking" : "Start Speaking"}
-              >
-                <Mic size={20} className={isRecording ? "animate-pulse" : ""} />
-              </button>
-
-              <button 
-                className="w-12 h-12 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center justify-center transition-all shadow-md"
-                title="Toggle Video"
-              >
-                <Video size={20} />
-              </button>
-
-              <button 
-                className="w-12 h-12 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center justify-center transition-all shadow-md"
-                title="Share Screen"
-              >
-                <Monitor size={20} />
-              </button>
-
-              <button 
-                onClick={() => setIsChatOpen(!isChatOpen)}
-                className="w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-all shadow-md"
-                title="Toggle Chat"
-              >
-                <MessageSquare size={20} />
-              </button>
-
-              <div className="w-px h-8 bg-gray-300 mx-2"></div>
-
-              <button
-                onClick={() => endSession(true)}
-                disabled={!sessionStarted}
-                className="w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-all shadow-md disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
-                title="End Interview"
-              >
-                <PhoneOff size={20} />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Start Screen */}
-        {!sessionStarted && (
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center z-50">
-            <div className="text-center max-w-md mx-auto px-6">
-              <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-2xl">
-                <span className="text-4xl">🎯</span>
-              </div>
-              <h2 className="text-4xl font-bold mb-3 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-                AI Interview Portal
-              </h2>
-              <p className="text-gray-600 mb-8 text-lg">
-                Ready to showcase your skills? Let&apos;s begin your interview session.
-              </p>
-              <button
-                onClick={handleStartInterview}
-                disabled={wsStatus !== "connected" || !sessionReady}
-                className="px-8 py-4 text-lg font-semibold rounded-xl shadow-xl transition-all duration-300 transform bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white active:scale-95 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed disabled:transform-none"
-              >
-                {wsStatus === "connected" && sessionReady ? "Start Interview" : "Connecting..."}
-              </button>
-              {wsStatus === "connecting" && (
-                <div className="mt-4 flex items-center justify-center space-x-2 text-sm text-gray-500">
-                  <Loader2 size={16} className="animate-spin" />
-                  <span>Establishing connection...</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Error Toast */}
-        {errorMessage && (
-          <div className="absolute top-20 right-6 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl shadow-lg z-50 max-w-sm">
-            <div className="flex items-start space-x-3">
-              <div className="flex-shrink-0 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold mt-0.5">!</div>
-              <div className="flex-1">
-                <p className="text-sm font-medium">{errorMessage}</p>
-              </div>
-              <button 
-                onClick={() => setErrorMessage(null)}
-                className="flex-shrink-0 text-red-500 hover:text-red-700"
-              >
-                <X size={16} />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+    <RoomView
+      title={title ?? "AI interview"}
+      subtitle={subtitle}
+      mode="live"
+      phase={turn.phase}
+      connection={wsStatus}
+      started={sessionStarted}
+      completed={turn.completed}
+      messages={messages}
+      liveTranscript={isRecording && turn.phase !== "AI_SPEAKING" ? liveTranscript : ""}
+      remainingSeconds={timeRemaining}
+      totalSeconds={totalSeconds}
+      question={progress}
+      mic={{ state: micState, level: micLevel, disabled: !sessionStarted || !connected || isMicStarting || (!isRecording && !canStartRecording(turn, { sessionStarted, connected })) }}
+      error={errorMessage}
+      selfVideoRef={userVideoRef}
+      onStart={() => void handleStartInterview()}
+      onToggleMic={handleToggleMic}
+      onEnd={() => {
+        const hasHandler = Boolean(onFinishedRef.current);
+        endSession(!hasHandler);
+        onFinishedRef.current?.("ended", sessionIdRef.current);
+      }}
+      onDismissError={() => setErrorMessage(null)}
+    />
   );
 };
 
