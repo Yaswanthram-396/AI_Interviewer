@@ -29,11 +29,11 @@ const InterviewSchema = new mongoose.Schema(
     difficulty: {
       type: String,
       enum: ["Beginner", "Intermediate", "Advanced"],
-      default: "medium",
+      default: "Intermediate",
     },
     createdDate: {
       type: Date,
-      default: Date.now(),
+      default: Date.now,
     },
   },
   {
