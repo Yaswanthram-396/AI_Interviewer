@@ -1,8 +1,6 @@
-import CreateInterview from "../components/createInterview";
+import { redirect } from "next/navigation";
 
-const CreateInterviewRoute: React.FC = () => {
-return (
-      <CreateInterview />
-  );  
+/** Legacy route: creating an interview is now the admin "Create Interview" workflow. */
+export default function LegacyCreateInterviewRedirect() {
+  redirect("/admin/interviews/new");
 }
-export default CreateInterviewRoute;

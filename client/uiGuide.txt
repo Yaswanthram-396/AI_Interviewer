@@ -1,0 +1,1383 @@
+
+
+
+
+# Additional Product Requirements: Admin Portal, Interview Creation and Candidate AI Assessment Reports
+
+Extend the existing SIRI AI Interview Platform with an Admin Portal and a comprehensive Candidate Performance Report System.
+
+The platform must support two distinct roles:
+
+1. ADMIN
+2. CANDIDATE
+
+Build a complete experience connecting interview creation, candidate participation, AI evaluation, and final performance reporting.
+
+Maintain the existing premium light design system, green and earthy accent colors, typography, spacing, and reusable component architecture.
+
+# 1. ADMIN PORTAL
+
+The admin portal should be simple, professional, and focused primarily on creating and managing interviews.
+
+Do not build an unnecessarily complicated enterprise admin dashboard.
+
+## Admin Navigation
+
+Create a separate admin layout with:
+
+- Overview
+- Create Interview
+- All Interviews
+- Candidate Reports
+- Settings
+
+Use a clean sidebar with a clear Admin identity.
+
+## Admin Overview
+
+Display a minimal overview:
+
+- Total Interviews Created
+- Active Interviews
+- Completed Interviews
+- Total Candidates
+
+Below the overview, display:
+- Recently created interviews.
+- Recently completed interviews.
+- Quick action to create an interview.
+
+Keep the dashboard minimal and useful.
+
+# 2. CREATE INTERVIEW PAGE
+
+This is the most important admin functionality.
+
+Create a polished interview creation workflow.
+
+The admin should be able to configure an interview before assigning it to candidates.
+
+Use a multi-section form with a clear visual hierarchy.
+
+## Section A: Interview Information
+
+Fields:
+
+- Interview Title
+- Job Role
+- Department
+- Company Name
+- Interview Description
+- Interview Instructions
+
+Example:
+
+Title: MERN Stack Developer Technical Interview
+Role: Full Stack Developer
+Department: Engineering
+Description: Evaluate the candidate's knowledge of JavaScript, React, Node.js, Express and MongoDB.
+
+## Section B: Interview Configuration
+
+Fields:
+
+- Interview Type
+- Difficulty Level
+- Interview Duration
+- Number of Main Questions
+- Maximum Follow-up Questions
+- Language
+
+Interview types:
+- Technical
+- Frontend
+- Backend
+- Full Stack
+- System Design
+- Behavioral
+
+Difficulty:
+- Beginner
+- Intermediate
+- Advanced
+- Adaptive
+
+Allow the admin to configure whether SIRI should dynamically adjust question difficulty based on candidate performance.
+
+## Section C: Technical Topics and Skills
+
+Allow admins to add multiple topics and skills.
+
+Example for MERN Stack:
+
+- JavaScript
+- React
+- Node.js
+- Express.js
+- MongoDB
+- REST APIs
+- Authentication
+- System Design
+
+For each topic, allow:
+- Topic name.
+- Weightage.
+- Difficulty.
+- Number of questions.
+
+Use an intuitive tag-based input and editable topic list.
+
+Ensure total evaluation weightage adds up to 100%.
+
+## Section D: AI Interview Behavior
+
+Allow the admin to configure SIRI's interview behavior.
+
+Settings:
+
+- Enable contextual follow-up questions.
+- Enable adaptive difficulty.
+- Allow candidate to request question repetition.
+- Allow candidate to skip questions.
+- Enable clarification questions.
+- Maximum follow-ups per main question.
+- Enable voice-based interaction.
+- Enable candidate interruption handling.
+
+Add an AI interviewer personality selector:
+
+- Professional
+- Friendly
+- Challenging
+- Balanced
+
+Default: Professional and Friendly.
+
+## Section E: Candidate Assignment
+
+Allow the admin to assign the interview to candidates.
+
+Fields:
+
+- Candidate Name
+- Candidate Email
+- Optional Candidate ID
+
+Support adding multiple candidates.
+
+Display the assigned candidate list in a clean table.
+
+Each candidate should have an assignment status:
+- Invited
+- Not Started
+- In Progress
+- Completed
+
+For the prototype, simulate invitation functionality if email integration is unavailable.
+
+## Section F: Interview Preview and Publishing
+
+Before publishing, show a summary of all interview configurations.
+
+Include:
+
+- Interview information.
+- Selected skills.
+- Difficulty.
+- Duration.
+- Number of questions.
+- AI behavior settings.
+- Assigned candidates.
+
+Actions:
+
+- Save as Draft
+- Preview Interview
+- Publish Interview
+
+After publishing, show a success screen with the interview ID and candidate assignment status.
+
+# 3. ADMIN — ALL INTERVIEWS PAGE
+
+Create a management page where admins can view all created interviews.
+
+Use a clean table with:
+
+- Interview Title
+- Job Role
+- Difficulty
+- Candidates Assigned
+- Completed Candidates
+- Created Date
+- Status
+- Actions
+
+Actions:
+
+- View Details
+- Edit
+- Duplicate
+- Archive
+
+Provide filters for:
+- Active
+- Draft
+- Completed
+- Archived
+
+Clicking an interview should open an interview details page containing its configuration and assigned candidates.
+
+# 4. ADMIN — CANDIDATE REPORTS
+
+Create a dedicated report management page.
+
+Display:
+
+- Candidate Name
+- Interview Title
+- Overall Score
+- Completion Date
+- Performance Level
+- View Report action
+
+Use a professional table with search and filtering.
+
+The admin should be able to open any completed candidate report and review the detailed AI evaluation.
+
+# 5. CANDIDATE EXPERIENCE
+
+Candidates should have a separate, simpler interface.
+
+Candidate navigation:
+
+- My Interviews
+- My Reports
+- Profile
+- Settings
+
+The candidate dashboard should display:
+
+- Upcoming interviews.
+- Interviews in progress.
+- Completed interviews.
+- Recent performance.
+
+Candidates should only be able to access interviews assigned to them.
+
+## Candidate Interview Details
+
+Before starting an interview, display:
+
+- Interview title.
+- Job role.
+- Topics covered.
+- Difficulty.
+- Expected duration.
+- Number of questions.
+- Interview instructions.
+
+Include a clear Start Interview button.
+
+After the interview, redirect the candidate to their detailed report card when evaluation is complete.
+
+# 6. CANDIDATE AI REPORT CARD — HIGHEST PRIORITY
+
+Build an exceptional interview assessment report.
+
+This should be one of the most impressive pages in the entire application.
+
+The report must feel like a detailed technical evaluation prepared by an experienced technical interviewer.
+
+Do not limit the report to an overall score.
+
+It should explain:
+
+- What the candidate did well.
+- What the candidate needs to improve.
+- Which concepts they understand.
+- Which concepts they are missing.
+- How they performed in individual topics.
+- What they should study next.
+- Whether they are interview-ready.
+
+Use a premium report layout with a clear visual hierarchy.
+
+## A. Report Header
+
+Display:
+
+- Candidate Name
+- Interview Title
+- Job Role
+- Interview Date
+- Interview Duration
+- Completion Status
+
+Add a Download Report PDF action.
+
+## B. Overall Performance
+
+Show a prominent overall score.
+
+Example:
+
+82/100
+
+Performance label:
+Strong Performance
+
+Include a short AI-generated summary:
+
+"You demonstrated a good understanding of JavaScript fundamentals, React component architecture and backend API development. Your answers were generally structured and technically accurate. You could improve your explanation of asynchronous execution and database indexing."
+
+Show a visual score indicator with a circular progress chart or elegant score visualization.
+
+Performance categories:
+
+- Excellent: 90–100
+- Strong: 75–89
+- Good: 60–74
+- Needs Improvement: 40–59
+- Poor: Below 40
+
+These thresholds should be configurable.
+
+Do not make the score the only important element.
+
+## C. What You Did Well — Strengths
+
+This section is extremely important.
+
+Title: "What You Did Well"
+
+Display specific strengths identified from actual interview answers.
+
+Example:
+
+1. Strong JavaScript Fundamentals
+
+"You correctly explained closures, lexical scope and the relationship between inner and outer functions."
+
+2. Practical React Knowledge
+
+"You demonstrated an understanding of component composition, props and state management with practical examples."
+
+3. Good Backend Understanding
+
+"You explained the role of Express middleware and its application in authentication workflows."
+
+4. Structured Communication
+
+"Your answers were generally organized and easy to follow. You explained the problem before discussing the implementation."
+
+Each strength should include:
+- Title.
+- Detailed explanation.
+- Related interview question.
+- Evidence from the candidate's answer.
+- Topic or skill.
+
+Use subtle green visual treatments.
+
+## D. Areas for Improvement
+
+Title: "What You Should Improve"
+
+This section should be constructive, specific, and actionable.
+
+Example:
+
+1. Asynchronous JavaScript
+
+"You understand Promises at a basic level, but your explanation of the event loop and microtask queue was incomplete."
+
+How to improve:
+- Understand the call stack.
+- Study the task queue and microtask queue.
+- Practice Promise and async/await execution order.
+
+2. Database Indexing
+
+"You explained MongoDB CRUD operations but could not clearly explain how indexes improve query performance."
+
+How to improve:
+- Understand B-tree indexes.
+- Learn compound indexes.
+- Practice analyzing query execution plans.
+
+3. System Design Fundamentals
+
+"Your understanding of REST APIs is good, but you need more practice explaining scalability, caching and database trade-offs."
+
+For each improvement, show:
+
+- Area.
+- Current performance.
+- What was missing.
+- Why it matters.
+- Specific recommended actions.
+- Suggested learning priority.
+
+Use amber or neutral visual treatments rather than aggressive red warnings.
+
+## E. Topic-wise Performance
+
+Create a professional visual breakdown.
+
+Example:
+
+JavaScript — 90/100
+React — 85/100
+Node.js — 78/100
+Express.js — 82/100
+MongoDB — 65/100
+System Design — 55/100
+
+Use horizontal progress bars or a clean radar chart.
+
+Clicking a topic should show:
+- Questions asked.
+- Candidate answers.
+- Evaluation feedback.
+- Missing concepts.
+
+Clearly distinguish assessed topics from topics that were not covered.
+
+## F. Question-by-Question Evaluation
+
+Create a detailed section called "Your Interview Breakdown".
+
+For every question display:
+
+- Question number.
+- Question text.
+- Topic.
+- Difficulty.
+- Candidate's answer.
+- Score.
+- Evaluation.
+- What was correct.
+- What was missing.
+- Suggested better approach.
+
+Example:
+
+Question 03 — JavaScript
+
+Question:
+"What is the difference between Promise.all() and Promise.allSettled()?"
+
+Candidate Answer:
+"Promise.all executes promises together and returns the results."
+
+AI Evaluation:
+
+Score: 6/10
+
+What you got right:
+"You correctly identified that Promise.all handles multiple promises concurrently."
+
+What was missing:
+"You did not explain that Promise.all rejects as soon as one promise rejects, whereas Promise.allSettled waits for all promises to settle and returns their individual statuses."
+
+Interviewer Feedback:
+"Good starting point. Focus on understanding failure handling when working with multiple asynchronous operations."
+
+Allow answers to expand and collapse to keep the report readable.
+
+## G. Communication and Interview Skills
+
+Evaluate communication independently from technical knowledge.
+
+Display:
+
+- Answer clarity.
+- Explanation structure.
+- Confidence indicators, only when reliably measurable.
+- Conciseness.
+- Use of practical examples.
+- Ability to handle follow-up questions.
+
+Avoid inferring personality or subjective traits from voice characteristics.
+
+Do not penalize accents or minor grammar mistakes.
+
+## H. Recommended Learning Roadmap
+
+Title: "Your Recommended Improvement Plan"
+
+Generate a personalized roadmap from the candidate's actual weak areas.
+
+Example:
+
+Priority 1 — High
+
+JavaScript Event Loop
+
+- Understand execution contexts.
+- Study microtasks and macrotasks.
+- Practice output-based questions.
+- Complete 10 event loop exercises.
+
+Priority 2 — Medium
+
+MongoDB Performance
+
+- Learn indexing.
+- Study compound indexes.
+- Practice aggregation pipelines.
+
+Priority 3 — Medium
+
+System Design
+
+- Learn caching.
+- Understand load balancing.
+- Practice API scalability questions.
+
+Show:
+- Priority.
+- Topic.
+- Learning objective.
+- Recommended resources or exercises.
+- Estimated study time.
+
+The learning roadmap should be actionable rather than generic.
+
+## I. Final AI Interviewer Assessment
+
+Add a final section:
+
+"Final Assessment from SIRI"
+
+Example:
+
+"You have a solid foundation in full-stack development, particularly in JavaScript and React. Your practical experience is reflected in your ability to explain real-world implementation scenarios.
+
+Your primary improvement areas are database performance and deeper understanding of asynchronous JavaScript execution.
+
+With focused preparation in these areas and additional practice with system design questions, you can significantly improve your performance in technical interviews.
+
+Overall assessment: Strong foundation, with a few areas requiring deeper technical understanding."
+
+Also display:
+
+- Current readiness: Interview Ready / Almost Ready / Needs More Practice.
+- Strongest skill.
+- Biggest improvement area.
+- Recommended next step.
+
+The readiness classification must be based on configurable criteria and should not be presented as a guaranteed hiring prediction.
+
+# 7. REPORT DESIGN
+
+The report should feel like a premium assessment document.
+
+Use:
+
+- Strong typography.
+- Clear section hierarchy.
+- Subtle green highlights for strengths.
+- Warm amber highlights for improvement areas.
+- Clean charts.
+- Expandable question evaluations.
+- Generous whitespace.
+- Consistent score visualizations.
+
+Avoid making every section a card.
+
+Use a mix of editorial layouts, dividers, compact statistics, and visual indicators.
+
+The candidate should be able to understand their performance within 30 seconds, while having access to deeper technical feedback when they explore the report.
+
+# 8. ADMIN AND CANDIDATE DATA FLOW
+
+Implement the complete product journey:
+
+ADMIN
+  |
+  v
+Create Interview
+  |
+  v
+Configure Role, Topics, Difficulty and AI Behavior
+  |
+  v
+Assign Candidates
+  |
+  v
+Publish Interview
+  |
+  v
+CANDIDATE
+  |
+  v
+View Assigned Interview
+  |
+  v
+Join SIRI Interview Room
+  |
+  v
+Voice Conversation
+  |
+  v
+Deepgram STT
+  |
+  v
+Vertex AI Evaluation
+  |
+  v
+Follow-ups and Next Questions
+  |
+  v
+Interview Completion
+  |
+  v
+Generate Candidate Report
+  |
+  v
+ADMIN REVIEWS REPORT
+  |
+  v
+CANDIDATE VIEWS PERSONALIZED FEEDBACK
+
+# 9. Demo Data and Functionality
+
+Create realistic demo data for:
+
+- Admin account.
+- Candidate account.
+- Created interviews.
+- Assigned candidates.
+- Completed interviews.
+- Candidate performance reports.
+
+Ensure the UI is fully navigable.
+
+The admin should be able to:
+- Create interviews.
+- Save drafts.
+- Publish interviews.
+- Assign candidates.
+- View candidate progress.
+- Open candidate reports.
+
+The candidate should be able to:
+- View assigned interviews.
+- Start an interview.
+- Experience a simulated SIRI conversation.
+- Complete an interview.
+- View their report card.
+
+Clearly separate simulated AI evaluation from actual backend-generated evaluation.
+
+Use mock services if the backend APIs are not yet connected. Keep the data model and service layer ready for real integration.
+
+# 10. Final Product Quality
+
+The final platform should feel like a real AI interview SaaS product.
+
+The most important screens to polish are:
+
+1. Admin Create Interview.
+2. Candidate Interview Room.
+3. Candidate AI Performance Report.
+
+The report must be particularly impressive because it demonstrates the actual value of the AI interviewer beyond simply asking questions.
+
+Build a coherent experience from interview creation to candidate assessment.
+
+Do not compromise the existing design system. Reuse components, maintain consistent spacing and typography, and ensure responsive behavior.
+
+Implement working navigation and realistic interactions, not just static visual mockups.
+
+
+
+# Additional Product Requirements: Admin Portal, Interview Creation and Candidate AI Assessment Reports
+
+Extend the existing SIRI AI Interview Platform with an Admin Portal and a comprehensive Candidate Performance Report System.
+
+The platform must support two distinct roles:
+
+1. ADMIN
+2. CANDIDATE
+
+Build a complete experience connecting interview creation, candidate participation, AI evaluation, and final performance reporting.
+
+Maintain the existing premium light design system, green and earthy accent colors, typography, spacing, and reusable component architecture.
+
+# 1. ADMIN PORTAL
+
+The admin portal should be simple, professional, and focused primarily on creating and managing interviews.
+
+Do not build an unnecessarily complicated enterprise admin dashboard.
+
+## Admin Navigation
+
+Create a separate admin layout with:
+
+- Overview
+- Create Interview
+- All Interviews
+- Candidate Reports
+- Settings
+
+Use a clean sidebar with a clear Admin identity.
+
+## Admin Overview
+
+Display a minimal overview:
+
+- Total Interviews Created
+- Active Interviews
+- Completed Interviews
+- Total Candidates
+
+Below the overview, display:
+- Recently created interviews.
+- Recently completed interviews.
+- Quick action to create an interview.
+
+Keep the dashboard minimal and useful.
+
+# 2. CREATE INTERVIEW PAGE
+
+This is the most important admin functionality.
+
+Create a polished interview creation workflow.
+
+The admin should be able to configure an interview before assigning it to candidates.
+
+Use a multi-section form with a clear visual hierarchy.
+
+## Section A: Interview Information
+
+Fields:
+
+- Interview Title
+- Job Role
+- Department
+- Company Name
+- Interview Description
+- Interview Instructions
+
+Example:
+
+Title: MERN Stack Developer Technical Interview
+Role: Full Stack Developer
+Department: Engineering
+Description: Evaluate the candidate's knowledge of JavaScript, React, Node.js, Express and MongoDB.
+
+## Section B: Interview Configuration
+
+Fields:
+
+- Interview Type
+- Difficulty Level
+- Interview Duration
+- Number of Main Questions
+- Maximum Follow-up Questions
+- Language
+
+Interview types:
+- Technical
+- Frontend
+- Backend
+- Full Stack
+- System Design
+- Behavioral
+
+Difficulty:
+- Beginner
+- Intermediate
+- Advanced
+- Adaptive
+
+Allow the admin to configure whether SIRI should dynamically adjust question difficulty based on candidate performance.
+
+## Section C: Technical Topics and Skills
+
+Allow admins to add multiple topics and skills.
+
+Example for MERN Stack:
+
+- JavaScript
+- React
+- Node.js
+- Express.js
+- MongoDB
+- REST APIs
+- Authentication
+- System Design
+
+For each topic, allow:
+- Topic name.
+- Weightage.
+- Difficulty.
+- Number of questions.
+
+Use an intuitive tag-based input and editable topic list.
+
+Ensure total evaluation weightage adds up to 100%.
+
+## Section D: AI Interview Behavior
+
+Allow the admin to configure SIRI's interview behavior.
+
+Settings:
+
+- Enable contextual follow-up questions.
+- Enable adaptive difficulty.
+- Allow candidate to request question repetition.
+- Allow candidate to skip questions.
+- Enable clarification questions.
+- Maximum follow-ups per main question.
+- Enable voice-based interaction.
+- Enable candidate interruption handling.
+
+Add an AI interviewer personality selector:
+
+- Professional
+- Friendly
+- Challenging
+- Balanced
+
+Default: Professional and Friendly.
+
+## Section E: Candidate Assignment
+
+Allow the admin to assign the interview to candidates.
+
+Fields:
+
+- Candidate Name
+- Candidate Email
+- Optional Candidate ID
+
+Support adding multiple candidates.
+
+Display the assigned candidate list in a clean table.
+
+Each candidate should have an assignment status:
+- Invited
+- Not Started
+- In Progress
+- Completed
+
+For the prototype, simulate invitation functionality if email integration is unavailable.
+
+## Section F: Interview Preview and Publishing
+
+Before publishing, show a summary of all interview configurations.
+
+Include:
+
+- Interview information.
+- Selected skills.
+- Difficulty.
+- Duration.
+- Number of questions.
+- AI behavior settings.
+- Assigned candidates.
+
+Actions:
+
+- Save as Draft
+- Preview Interview
+- Publish Interview
+
+After publishing, show a success screen with the interview ID and candidate assignment status.
+
+# 3. ADMIN — ALL INTERVIEWS PAGE
+
+Create a management page where admins can view all created interviews.
+
+Use a clean table with:
+
+- Interview Title
+- Job Role
+- Difficulty
+- Candidates Assigned
+- Completed Candidates
+- Created Date
+- Status
+- Actions
+
+Actions:
+
+- View Details
+- Edit
+- Duplicate
+- Archive
+
+Provide filters for:
+- Active
+- Draft
+- Completed
+- Archived
+
+Clicking an interview should open an interview details page containing its configuration and assigned candidates.
+
+# 4. ADMIN — CANDIDATE REPORTS
+
+Create a dedicated report management page.
+
+Display:
+
+- Candidate Name
+- Interview Title
+- Overall Score
+- Completion Date
+- Performance Level
+- View Report action
+
+Use a professional table with search and filtering.
+
+The admin should be able to open any completed candidate report and review the detailed AI evaluation.
+
+# 5. CANDIDATE EXPERIENCE
+
+Candidates should have a separate, simpler interface.
+
+Candidate navigation:
+
+- My Interviews
+- My Reports
+- Profile
+- Settings
+
+The candidate dashboard should display:
+
+- Upcoming interviews.
+- Interviews in progress.
+- Completed interviews.
+- Recent performance.
+
+Candidates should only be able to access interviews assigned to them.
+
+## Candidate Interview Details
+
+Before starting an interview, display:
+
+- Interview title.
+- Job role.
+- Topics covered.
+- Difficulty.
+- Expected duration.
+- Number of questions.
+- Interview instructions.
+
+Include a clear Start Interview button.
+
+After the interview, redirect the candidate to their detailed report card when evaluation is complete.
+
+# 6. CANDIDATE AI REPORT CARD — HIGHEST PRIORITY
+
+Build an exceptional interview assessment report.
+
+This should be one of the most impressive pages in the entire application.
+
+The report must feel like a detailed technical evaluation prepared by an experienced technical interviewer.
+
+Do not limit the report to an overall score.
+
+It should explain:
+
+- What the candidate did well.
+- What the candidate needs to improve.
+- Which concepts they understand.
+- Which concepts they are missing.
+- How they performed in individual topics.
+- What they should study next.
+- Whether they are interview-ready.
+
+Use a premium report layout with a clear visual hierarchy.
+
+## A. Report Header
+
+Display:
+
+- Candidate Name
+- Interview Title
+- Job Role
+- Interview Date
+- Interview Duration
+- Completion Status
+
+Add a Download Report PDF action.
+
+## B. Overall Performance
+
+Show a prominent overall score.
+
+Example:
+
+82/100
+
+Performance label:
+Strong Performance
+
+Include a short AI-generated summary:
+
+"You demonstrated a good understanding of JavaScript fundamentals, React component architecture and backend API development. Your answers were generally structured and technically accurate. You could improve your explanation of asynchronous execution and database indexing."
+
+Show a visual score indicator with a circular progress chart or elegant score visualization.
+
+Performance categories:
+
+- Excellent: 90–100
+- Strong: 75–89
+- Good: 60–74
+- Needs Improvement: 40–59
+- Poor: Below 40
+
+These thresholds should be configurable.
+
+Do not make the score the only important element.
+
+## C. What You Did Well — Strengths
+
+This section is extremely important.
+
+Title: "What You Did Well"
+
+Display specific strengths identified from actual interview answers.
+
+Example:
+
+1. Strong JavaScript Fundamentals
+
+"You correctly explained closures, lexical scope and the relationship between inner and outer functions."
+
+2. Practical React Knowledge
+
+"You demonstrated an understanding of component composition, props and state management with practical examples."
+
+3. Good Backend Understanding
+
+"You explained the role of Express middleware and its application in authentication workflows."
+
+4. Structured Communication
+
+"Your answers were generally organized and easy to follow. You explained the problem before discussing the implementation."
+
+Each strength should include:
+- Title.
+- Detailed explanation.
+- Related interview question.
+- Evidence from the candidate's answer.
+- Topic or skill.
+
+Use subtle green visual treatments.
+
+## D. Areas for Improvement
+
+Title: "What You Should Improve"
+
+This section should be constructive, specific, and actionable.
+
+Example:
+
+1. Asynchronous JavaScript
+
+"You understand Promises at a basic level, but your explanation of the event loop and microtask queue was incomplete."
+
+How to improve:
+- Understand the call stack.
+- Study the task queue and microtask queue.
+- Practice Promise and async/await execution order.
+
+2. Database Indexing
+
+"You explained MongoDB CRUD operations but could not clearly explain how indexes improve query performance."
+
+How to improve:
+- Understand B-tree indexes.
+- Learn compound indexes.
+- Practice analyzing query execution plans.
+
+3. System Design Fundamentals
+
+"Your understanding of REST APIs is good, but you need more practice explaining scalability, caching and database trade-offs."
+
+For each improvement, show:
+
+- Area.
+- Current performance.
+- What was missing.
+- Why it matters.
+- Specific recommended actions.
+- Suggested learning priority.
+
+Use amber or neutral visual treatments rather than aggressive red warnings.
+
+## E. Topic-wise Performance
+
+Create a professional visual breakdown.
+
+Example:
+
+JavaScript — 90/100
+React — 85/100
+Node.js — 78/100
+Express.js — 82/100
+MongoDB — 65/100
+System Design — 55/100
+
+Use horizontal progress bars or a clean radar chart.
+
+Clicking a topic should show:
+- Questions asked.
+- Candidate answers.
+- Evaluation feedback.
+- Missing concepts.
+
+Clearly distinguish assessed topics from topics that were not covered.
+
+## F. Question-by-Question Evaluation
+
+Create a detailed section called "Your Interview Breakdown".
+
+For every question display:
+
+- Question number.
+- Question text.
+- Topic.
+- Difficulty.
+- Candidate's answer.
+- Score.
+- Evaluation.
+- What was correct.
+- What was missing.
+- Suggested better approach.
+
+Example:
+
+Question 03 — JavaScript
+
+Question:
+"What is the difference between Promise.all() and Promise.allSettled()?"
+
+Candidate Answer:
+"Promise.all executes promises together and returns the results."
+
+AI Evaluation:
+
+Score: 6/10
+
+What you got right:
+"You correctly identified that Promise.all handles multiple promises concurrently."
+
+What was missing:
+"You did not explain that Promise.all rejects as soon as one promise rejects, whereas Promise.allSettled waits for all promises to settle and returns their individual statuses."
+
+Interviewer Feedback:
+"Good starting point. Focus on understanding failure handling when working with multiple asynchronous operations."
+
+Allow answers to expand and collapse to keep the report readable.
+
+## G. Communication and Interview Skills
+
+Evaluate communication independently from technical knowledge.
+
+Display:
+
+- Answer clarity.
+- Explanation structure.
+- Confidence indicators, only when reliably measurable.
+- Conciseness.
+- Use of practical examples.
+- Ability to handle follow-up questions.
+
+Avoid inferring personality or subjective traits from voice characteristics.
+
+Do not penalize accents or minor grammar mistakes.
+
+## H. Recommended Learning Roadmap
+
+Title: "Your Recommended Improvement Plan"
+
+Generate a personalized roadmap from the candidate's actual weak areas.
+
+Example:
+
+Priority 1 — High
+
+JavaScript Event Loop
+
+- Understand execution contexts.
+- Study microtasks and macrotasks.
+- Practice output-based questions.
+- Complete 10 event loop exercises.
+
+Priority 2 — Medium
+
+MongoDB Performance
+
+- Learn indexing.
+- Study compound indexes.
+- Practice aggregation pipelines.
+
+Priority 3 — Medium
+
+System Design
+
+- Learn caching.
+- Understand load balancing.
+- Practice API scalability questions.
+
+Show:
+- Priority.
+- Topic.
+- Learning objective.
+- Recommended resources or exercises.
+- Estimated study time.
+
+The learning roadmap should be actionable rather than generic.
+
+## I. Final AI Interviewer Assessment
+
+Add a final section:
+
+"Final Assessment from SIRI"
+
+Example:
+
+"You have a solid foundation in full-stack development, particularly in JavaScript and React. Your practical experience is reflected in your ability to explain real-world implementation scenarios.
+
+Your primary improvement areas are database performance and deeper understanding of asynchronous JavaScript execution.
+
+With focused preparation in these areas and additional practice with system design questions, you can significantly improve your performance in technical interviews.
+
+Overall assessment: Strong foundation, with a few areas requiring deeper technical understanding."
+
+Also display:
+
+- Current readiness: Interview Ready / Almost Ready / Needs More Practice.
+- Strongest skill.
+- Biggest improvement area.
+- Recommended next step.
+
+The readiness classification must be based on configurable criteria and should not be presented as a guaranteed hiring prediction.
+
+# 7. REPORT DESIGN
+
+The report should feel like a premium assessment document.
+
+Use:
+
+- Strong typography.
+- Clear section hierarchy.
+- Subtle green highlights for strengths.
+- Warm amber highlights for improvement areas.
+- Clean charts.
+- Expandable question evaluations.
+- Generous whitespace.
+- Consistent score visualizations.
+
+Avoid making every section a card.
+
+Use a mix of editorial layouts, dividers, compact statistics, and visual indicators.
+
+The candidate should be able to understand their performance within 30 seconds, while having access to deeper technical feedback when they explore the report.
+
+# 8. ADMIN AND CANDIDATE DATA FLOW
+
+Implement the complete product journey:
+
+ADMIN
+  |
+  v
+Create Interview
+  |
+  v
+Configure Role, Topics, Difficulty and AI Behavior
+  |
+  v
+Assign Candidates
+  |
+  v
+Publish Interview
+  |
+  v
+CANDIDATE
+  |
+  v
+View Assigned Interview
+  |
+  v
+Join SIRI Interview Room
+  |
+  v
+Voice Conversation
+  |
+  v
+Deepgram STT
+  |
+  v
+Vertex AI Evaluation
+  |
+  v
+Follow-ups and Next Questions
+  |
+  v
+Interview Completion
+  |
+  v
+Generate Candidate Report
+  |
+  v
+ADMIN REVIEWS REPORT
+  |
+  v
+CANDIDATE VIEWS PERSONALIZED FEEDBACK
+
+# 9. Demo Data and Functionality
+
+Create realistic demo data for:
+
+- Admin account.
+- Candidate account.
+- Created interviews.
+- Assigned candidates.
+- Completed interviews.
+- Candidate performance reports.
+
+Ensure the UI is fully navigable.
+
+The admin should be able to:
+- Create interviews.
+- Save drafts.
+- Publish interviews.
+- Assign candidates.
+- View candidate progress.
+- Open candidate reports.
+
+The candidate should be able to:
+- View assigned interviews.
+- Start an interview.
+- Experience a simulated SIRI conversation.
+- Complete an interview.
+- View their report card.
+
+Clearly separate simulated AI evaluation from actual backend-generated evaluation.
+
+Use mock services if the backend APIs are not yet connected. Keep the data model and service layer ready for real integration.
+
+# 10. Final Product Quality
+
+The final platform should feel like a real AI interview SaaS product.
+
+The most important screens to polish are:
+
+1. Admin Create Interview.
+2. Candidate Interview Room.
+3. Candidate AI Performance Report.
+
+The report must be particularly impressive because it demonstrates the actual value of the AI interviewer beyond simply asking questions.
+
+Build a coherent experience from interview creation to candidate assessment.
+
+Do not compromise the existing design system. Reuse components, maintain consistent spacing and typography, and ensure responsive behavior.
+
+Implement working navigation and realistic interactions, not just static visual mockups.
